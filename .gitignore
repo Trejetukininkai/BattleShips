@@ -1,0 +1,23 @@
+# Visual Studio
+.vs/
+*.vsidx
+
+# Build outputs
+**/obj/
+**/bin/
+**/Debug/
+**/Release/
+**/build/
+**/publish/
+**/artifacts/
+**/logs/
+**/temp/
+**/cache/
+**/backup/
+**/old/
+**/temp/
+**/cache/
+**/backup/
+**/old/
+
+.env
