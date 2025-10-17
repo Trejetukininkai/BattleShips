@@ -1,112 +1,346 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.AspNetCore.SignalR.Client;
 using BattleShips.Core;
 
 namespace BattleShips.Client
 {
     public partial class Form1 : Form
     {
-        private HubConnection? _conn;
+        private readonly GameClient _client = new();
+        private readonly GameModel _model = new GameModel();
+        private readonly BoardRenderer _renderer = new BoardRenderer(cell: 40, margin: 80);
 
-        // --- grid visuals ---
-        private const int Cell = 40;         // cell size in px
-        private const int Margin = 40;       // left/top margin (for labels)
-        private readonly HashSet<Point> _marked = new(); // clicked cells (col,row)
+        // UI
+        private Panel? _startupPanel;
+        private Button? _btnConnectLocal;
+        private Label? _lblStatus;
+        private Label? _lblCountdown;
+        private System.Windows.Forms.Timer? _uiTimer;
 
         public Form1()
         {
             InitializeComponent();
-            DoubleBuffered = true;           // smoother drawing
-            MinimumSize = new Size(2*Margin + Board.Size*Cell + 32,
-                                   2*Margin + Board.Size*Cell + 72);
+            DoubleBuffered = true;
 
-            Shown += async (_, __) => await ConnectAsync();
+            var totalWidth = 2 * _renderer.Margin + Board.Size * _renderer.Cell * 2;
+            var totalHeight = 2 * _renderer.Margin + Board.Size * _renderer.Cell + 80;
+            MinimumSize = new Size(totalWidth, totalHeight);
+
+            InitStartupPanel();
+
             Paint += OnPaintGrid;
             MouseClick += OnMouseClickGrid;
             Resize += (_, __) => Invalidate();
+
+            _uiTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _uiTimer.Tick += UiTimer_Tick;
+
+            WireClientEvents();
         }
 
-        private async Task ConnectAsync()
+        private void InitStartupPanel()
         {
-            var baseUrl = Environment.GetEnvironmentVariable("API_URL") ?? "http://localhost:5000";
-            Console.WriteLine(baseUrl);
-            _conn = new HubConnectionBuilder()
-                .WithUrl($"{baseUrl.TrimEnd('/')}/game")
-                .WithAutomaticReconnect()
-                .Build();
+            _startupPanel = new Panel
+            {
+                BackColor = Color.FromArgb(30, 34, 44),
+                Size = new Size(ClientSize.Width, ClientSize.Height),
+                Anchor = AnchorStyles.None
+            };
 
-            _conn.On<string>("Pong", s => BeginInvoke(() => Text = $"Connected · {s}"));
-            await _conn.StartAsync();
-            Text = "Connected to BattleShips server";
-            await _conn.SendAsync("Ping", "client-hello");
+            _btnConnectLocal = new Button
+            {
+                Text = "Connect to localhost",
+                ForeColor = Color.White,
+                Size = new Size(200, 32),
+                Location = new Point(50, 30)
+            };
+
+            _lblStatus = new Label
+            {
+                Text = "Not connected",
+                ForeColor = Color.White,
+                Location = new Point(50, 72),
+                AutoSize = true
+            };
+
+            _lblCountdown = new Label
+            {
+                Text = "",
+                ForeColor = Color.Yellow,
+                Location = new Point(50, 100),
+                AutoSize = true
+            };
+
+            _btnConnectLocal.Click += async (_, __) =>
+            {
+                _btnConnectLocal.Enabled = false;
+                _lblStatus.Text = "Connecting...";
+                try
+                {
+                    await ConnectAsync("http://localhost:5000");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to connect: {ex.Message}", "Connect error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    _lblStatus.Text = "Not connected";
+                    _btnConnectLocal.Enabled = true;
+                }
+            };
+
+            _startupPanel.Controls.Add(_btnConnectLocal);
+            _startupPanel.Controls.Add(_lblStatus);
+            _startupPanel.Controls.Add(_lblCountdown);
+            Controls.Add(_startupPanel);
         }
 
-        // --- drawing ---
+        private void WireClientEvents()
+        {
+            _client.WaitingForOpponent += msg => BeginInvoke(() =>
+            {
+                _model.State = AppState.Waiting;
+                _lblStatus!.Text = msg;
+                Invalidate();
+            });
+
+            _client.StartPlacement += secs => BeginInvoke(() =>
+            {
+                _model.State = AppState.Placement;
+                _model.PlacementSecondsLeft = secs;
+                _lblStatus!.Text = $"Placement: place 10 ships ({_model.YourShips.Count}/10)";
+                UpdateCountdownLabel();
+                _uiTimer!.Start();
+                Invalidate();
+            });
+
+            _client.PlacementAck += count => BeginInvoke(() =>
+            {
+                _model.State = AppState.Waiting;
+                _uiTimer?.Stop();
+                _model.PlacementSecondsLeft = 0;
+                UpdateCountdownLabel();
+                _lblStatus!.Text = $"Placed {count} ships. Waiting for opponent...";
+                Invalidate();
+            });
+
+            _client.GameStarted += youStart => BeginInvoke(() =>
+            {
+                _model.State = AppState.Playing;
+                _model.IsMyTurn = youStart;
+                _lblStatus!.Text = youStart ? "Your turn" : "Opponent's turn";
+                _uiTimer?.Stop();
+                _model.PlacementSecondsLeft = 0;
+                UpdateCountdownLabel();
+                Invalidate();
+            });
+
+            _client.YourTurn += () => BeginInvoke(() =>
+            {
+                _model.IsMyTurn = true;
+                _lblStatus!.Text = "Your turn";
+                Invalidate();
+            });
+
+            _client.OpponentTurn += () => BeginInvoke(() =>
+            {
+                _model.IsMyTurn = false;
+                _lblStatus!.Text = "Opponent's turn";
+                Invalidate();
+            });
+
+            _client.MoveResult += (col, row, hit, remaining) => BeginInvoke(() =>
+            {
+                var p = new Point(col, row);
+                _model.ApplyMoveResult(p, hit);
+                _lblStatus!.Text = hit ? $"Hit! Opponent ships left: {remaining}" : $"Miss. Opponent ships left: {remaining}";
+                Invalidate();
+            });
+
+            _client.OpponentMoved += (col, row, hit) => BeginInvoke(() =>
+            {
+                var p = new Point(col, row);
+                _model.ApplyOpponentMove(p, hit);
+                _lblStatus!.Text = hit ? "Opponent hit your ship!" : "Opponent missed.";
+                Invalidate();
+            });
+
+            _client.MaxPlayersReached += msg => BeginInvoke(() =>
+            {
+                MessageBox.Show(msg ?? "Server full", "Server", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _btnConnectLocal!.Enabled = true;
+            });
+
+            _client.OpponentDisconnected += msg => BeginInvoke(() =>
+            {
+                MessageBox.Show(msg ?? "Opponent disconnected", "Server", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ResetBoards();
+                _model.State = AppState.Menu;
+                InitStartupPanel();
+                _lblStatus!.Text = "Opponent disconnected";
+                _startupPanel!.Visible = true;
+            });
+
+            _client.GameOver += msg => BeginInvoke(() =>
+            {
+                _model.State = AppState.GameOver;
+                MessageBox.Show(msg ?? "Game over", "Game", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ResetBoards();
+                InitStartupPanel();
+                _lblStatus!.Text = "Game over";
+                _startupPanel!.Visible = true;
+            });
+
+            _client.Error += msg => BeginInvoke(() =>
+            {
+                MessageBox.Show(msg ?? "Error", "Server", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            });
+        }
+
+        private async Task ConnectAsync(string? baseUrl = null)
+        {
+            baseUrl ??= Environment.GetEnvironmentVariable("API_URL") ?? "http://localhost:5000";
+            await _client.ConnectAsync(baseUrl);
+            ResetBoards();
+            _model.State = AppState.Waiting;
+            _startupPanel!.Visible = false;
+            Text = "Connected to BattleShips server";
+        }
+
+        private void UiTimer_Tick(object? sender, EventArgs e)
+        {
+            if (_model.State == AppState.Placement && _model.PlacementSecondsLeft > 0)
+            {
+                _model.PlacementSecondsLeft--;
+                UpdateCountdownLabel();
+                if (_model.PlacementSecondsLeft <= 0)
+                {
+                    _model.State = AppState.Waiting;
+                    _lblStatus!.Text = "Placement time expired. Waiting for game to start...";
+                }
+                Invalidate();
+            }
+        }
+
+        private void UpdateCountdownLabel()
+        {
+            if (_lblCountdown == null) return;
+            _lblCountdown.Text = _model.PlacementSecondsLeft > 0 ? $"Time left: {_model.PlacementSecondsLeft}s" : "";
+        }
+
+        private void ResetBoards()
+        {
+            _model.Reset();
+            _uiTimer?.Stop();
+            UpdateCountdownLabel();
+            Invalidate();
+        }
+
         private void OnPaintGrid(object? sender, PaintEventArgs e)
         {
             var g = e.Graphics;
             g.Clear(Color.FromArgb(20, 26, 38));
 
-            // Board rect
-            var w = Board.Size * Cell;
-            var h = Board.Size * Cell;
-
-            // labels
-            using var labelBrush = new SolidBrush(Color.White);
-            using var thin = new Pen(Color.Gray, 1);
-            using var thick = new Pen(Color.White, 2);
             using var font = new Font(Font.FontFamily, 10, FontStyle.Bold);
+            _renderer.DrawBoards(g, _model, font);
 
-            // column labels A-J
-            for (int c = 0; c < Board.Size; c++)
-            {
-                var ch = (char)('A' + c);
-                var x = Margin + c * Cell + Cell / 2f;
-                g.DrawString(ch.ToString(), font, labelBrush, x - 6, Margin - 24);
-            }
-            // row labels 1-10
-            for (int r = 0; r < Board.Size; r++)
-            {
-                var y = Margin + r * Cell + Cell / 2f;
-                g.DrawString((r + 1).ToString(), font, labelBrush, Margin - 28, y - 8);
-            }
+            // draw status with padded background and centered countdown
+            const int pad = 8;
+            var statusText = _lblStatus?.Text ?? "";
+            var countdownText = _lblCountdown?.Text ?? "";
 
-            // grid background
-            g.FillRectangle(new SolidBrush(Color.FromArgb(30, 70, 120)), Margin, Margin, w, h);
-            g.DrawRectangle(thick, Margin, Margin, w, h);
-
-            // grid lines
-            for (int i = 1; i < Board.Size; i++)
+            var statusSize = g.MeasureString(statusText, font);
+            var statusRect = new RectangleF(_renderer.Margin - pad / 2f, 8 - pad / 2f, statusSize.Width + pad, statusSize.Height + pad);
+            using (var bg = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
             {
-                // vertical
-                g.DrawLine(thin, Margin + i * Cell, Margin, Margin + i * Cell, Margin + h);
-                // horizontal
-                g.DrawLine(thin, Margin, Margin + i * Cell, Margin + w, Margin + i * Cell);
+                g.FillRectangle(bg, statusRect);
             }
+            g.DrawString(statusText, font, Brushes.White, statusRect.Left + pad / 2f, statusRect.Top + pad / 2f);
 
-            // draw marked cells (just a simple circle for now)
-            foreach (var p in _marked)
+            var countdownSize = g.MeasureString(countdownText, font);
+            var countdownWidth = countdownSize.Width + pad;
+            var centerX = (ClientSize.Width - countdownWidth) / 2f;
+            var countdownRect = new RectangleF(centerX, 8 - pad / 2f, countdownWidth, countdownSize.Height + pad);
+            using (var bg2 = new SolidBrush(Color.FromArgb(140, 30, 30, 0)))
             {
-                var x = Margin + p.X * Cell;
-                var y = Margin + p.Y * Cell;
-                g.FillEllipse(Brushes.Orange, x + 8, y + 8, Cell - 16, Cell - 16);
+                g.FillRectangle(bg2, countdownRect);
             }
+            g.DrawString(countdownText, font, Brushes.Yellow, countdownRect.Left + pad / 2f, countdownRect.Top + pad / 2f);
         }
 
-        // --- input: toggle a mark on click ---
-        private void OnMouseClickGrid(object? sender, MouseEventArgs e)
+        private async void OnMouseClickGrid(object? sender, MouseEventArgs e)
         {
-            var col = (e.X - Margin) / Cell;
-            var row = (e.Y - Margin) / Cell;
-            if (col < 0 || row < 0 || col >= Board.Size || row >= Board.Size) return;
+            var leftRect = _renderer.GetLeftBoardRect();
+            var rightRect = _renderer.GetRightBoardRect();
 
-            var p = new Point(col, row);
-            if (_marked.Contains(p)) _marked.Remove(p); else _marked.Add(p);
-            Invalidate();
+            var mouse = new Point(e.X, e.Y);
+
+            // left board (placement)
+            var hitLeft = _renderer.HitTest(mouse, leftRect);
+            if (hitLeft != null)
+            {
+                if (_model.State == AppState.Placement)
+                {
+                    var ok = _model.ToggleShip(hitLeft.Value, 10);
+                    if (!ok)
+                    {
+                        MessageBox.Show("Max 10 ships placed", "Placement", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+
+                    _lblStatus!.Text = $"Placement: place 10 ships ({_model.YourShips.Count}/10)";
+                    Invalidate();
+
+                    if (_model.YourShips.Count == 10 && _client.IsConnected)
+                    {
+                        try
+                        {
+                            await _client.PlaceShips(_model.YourShips.ToList());
+                            _model.State = AppState.Waiting;
+                            _uiTimer?.Stop();
+                            _model.PlacementSecondsLeft = 0;
+                            UpdateCountdownLabel();
+                            _lblStatus!.Text = "Placement submitted. Waiting for opponent...";
+                            Invalidate();
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show($"Failed to send placement: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    }
+                }
+                return;
+            }
+
+            // right board (firing)
+            var hitRight = _renderer.HitTest(mouse, rightRect);
+            if (hitRight != null)
+            {
+                if (_model.State != AppState.Playing) return;
+                if (!_model.IsMyTurn)
+                {
+                    MessageBox.Show("Not your turn", "Wait", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                if (_model.YourFired.Contains(hitRight.Value)) return;
+
+                if (_client.IsConnected)
+                {
+                    try
+                    {
+                        await _client.MakeMove(hitRight.Value.X, hitRight.Value.Y);
+                        // optimistic mark (server will confirm)
+                        _model.YourFired.Add(hitRight.Value);
+                        Invalidate();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Send failed: " + ex.Message);
+                    }
+                }
+                return;
+            }
         }
     }
 }
