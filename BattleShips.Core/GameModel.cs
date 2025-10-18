@@ -10,11 +10,18 @@ namespace BattleShips.Core
     {
         public HashSet<Point> YourShips { get; } = new();
         public HashSet<Point> YourHitsByOpponent { get; } = new();
-        public HashSet<Point> YourFired { get; } = new();        // shots you fired
-        public HashSet<Point> YourFiredHits { get; } = new();    // subset of YourFired that were hits
+        public HashSet<Point> YourFired { get; } = new();
+        public HashSet<Point> YourFiredHits { get; } = new();
+        public HashSet<Point> AnimatedCells { get; } = new();
+
+        // current disaster info (set while animating)
+        public string? CurrentDisasterName { get; set; }
+        public bool IsDisasterAnimating { get; set; }
+
         public AppState State { get; set; } = AppState.Menu;
         public bool IsMyTurn { get; set; }
         public int PlacementSecondsLeft { get; set; }
+        public int DisasterCountdown { get; set; } = -1;
 
         public void Reset()
         {
@@ -22,8 +29,12 @@ namespace BattleShips.Core
             YourHitsByOpponent.Clear();
             YourFired.Clear();
             YourFiredHits.Clear();
+            AnimatedCells.Clear();
             IsMyTurn = false;
             PlacementSecondsLeft = 0;
+            DisasterCountdown = -1;
+            CurrentDisasterName = null;
+            IsDisasterAnimating = false;
             State = AppState.Menu;
         }
 
