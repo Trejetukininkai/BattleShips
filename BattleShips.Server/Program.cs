@@ -34,6 +34,7 @@ await app.RunAsync();
 
 public class GameHub : Hub
 {
+    // private readonly IHubContext<GameHub>? _hubContext;
     // simple global tracking to allow only two players per game and a global waiting slot
     private static readonly ConcurrentDictionary<string, GameInstance> Games = new();
     private static readonly ConcurrentDictionary<string, string> PlayerGame = new(); // connectionId -> gameId
@@ -194,12 +195,15 @@ public class GameHub : Hub
         Console.WriteLine($"[Server] MakeMove: found game {gid} currentTurn={g.CurrentTurn}");
 
         // prepare data to send after we release the lock
+        #pragma warning disable CS0219 // Variable is assigned but its value is never used
         bool callerLost = false;
+
         var toCaller_MoveResult = (col:0, row:0, hit:false, remaining:0);
         var toOpponent_OpponentMoved = (col:0, row:0, hit:false);
         string? toCaller_GameOver = null;
         string? toOpponent_GameOver = null;
         int countdownToSend = -1;
+        #pragma warning restore CS0219 // Variable is assigned but its value is never used
         List<Point>? disasterAffected = null;
         List<Point>? hitsForA = null;
         List<Point>? hitsForB = null;
@@ -265,10 +269,10 @@ public class GameHub : Hub
                         {
                             Console.WriteLine($"[Server] Disaster triggered for game={gid}");
                             var gen = g.GameMode.EventGenerator;
-                            disasterTypeName = gen?.GetType().Name;
+                            disasterTypeName = gen?.GetEventName();
                             Console.WriteLine($"[Server] Generator type: {gen?.GetType().Name}");
                             // Generate affected cells and apply to server state while locked
-                            var affected = gen.CauseDisaster() ?? new List<Point>();
+                            var affected = gen!.CauseDisaster() ?? new List<Point>();
                             Console.WriteLine($"[Server] Disaster affected count: {affected.Count}");
                             if (affected.Count > 0)
                             {
@@ -348,8 +352,8 @@ public class GameHub : Hub
                     {
                         await Task.Delay(animationMs);
                         lock (_lock) { g.EventInProgress = false; }
-                        if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("DisasterFinished");
-                        if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("DisasterFinished");
+                        // if (g.PlayerA != null) await _hubContext!.Clients.Client(g.PlayerA).SendAsync("DisasterFinished");
+                        // if (g.PlayerB != null) await _hubContext!.Clients.Client(g.PlayerB).SendAsync("DisasterFinished");
                         Console.WriteLine($"[Server] Disaster finished for game={gid}");
                     }
                     catch (Exception ex) { Console.WriteLine($"[Server] Disaster finish task failed: {ex}"); }
@@ -358,6 +362,11 @@ public class GameHub : Hub
             catch (Exception ex)
             {
                 Console.WriteLine($"[Server] Failed to schedule disaster finish: {ex}");
+            }
+            finally
+            {
+                // reset countdown to send since event just occurred
+                countdownToSend = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
             }
         }
 

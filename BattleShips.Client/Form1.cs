@@ -276,7 +276,7 @@ namespace BattleShips.Client
             var token = _disasterCts.Token;
             try
             {
-                foreach (var cell in cells)
+                foreach (var cell in cells!)
                 {
                     Console.WriteLine($"[Client] Animating cell {cell}");
                     token.ThrowIfCancellationRequested();

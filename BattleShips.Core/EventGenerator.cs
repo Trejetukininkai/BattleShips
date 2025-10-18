@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.Security.Cryptography.X509Certificates;
 
 namespace BattleShips.Core
 {
@@ -16,6 +15,7 @@ namespace BattleShips.Core
         private const int DisasterIntervalMax = 4;
         private static readonly Random _rand = new();
         private int DisasterCountdown = (int)_rand.NextInt64(DisasterIntervalMin, DisasterIntervalMax);
+        
 
         public int GetDisasterCountdown() => DisasterCountdown;
         /// <summary>
@@ -33,6 +33,7 @@ namespace BattleShips.Core
         }
         public bool IsDisasterTime() => DisasterCountdown <= 0;
         public abstract List<Point> CauseDisaster(); // returns affected cells
+        public abstract String? GetEventName();
         protected Point SelectRandomCell(int boardSize = Board.Size) // TODO: use board size from GameMode, not Board.cs
         {
             int x = _rand.Next(0, boardSize);
@@ -59,6 +60,7 @@ namespace BattleShips.Core
             
             return affected;
         }
+        public override string? GetEventName() => EventType.Storm.ToString();
     }
     public class TsunamiGenerator : EventGenerator
     {
@@ -79,6 +81,7 @@ namespace BattleShips.Core
             }
             return new List<Point>();
         }
+        public override string? GetEventName() => EventType.Tsunami.ToString();
     }
     public class WhirlpoolGenerator : EventGenerator
     {
@@ -143,6 +146,7 @@ namespace BattleShips.Core
 
             return cells;
         }
+        public override string? GetEventName() => EventType.Whirlpool.ToString();
     }
     public class MeteorStrikeGenerator : EventGenerator
     {
@@ -166,5 +170,6 @@ namespace BattleShips.Core
 
             return affected;
         }
+        public override string? GetEventName() => "Meteor Strike";
     }
 }
