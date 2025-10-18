@@ -34,6 +34,7 @@ await app.RunAsync();
 
 public class GameHub : Hub
 {
+    public const int ShipPlacementTimeSeconds = 60;
     private record MoveResult
     {
         public int Col, Row, Remaining, Countdown;
@@ -50,7 +51,13 @@ public class GameHub : Hub
         public List<Point> HitsForB = new();
     }
 
-    // private readonly IHubContext<GameHub>? _hubContext;
+    private readonly IHubContext<GameHub> _hubContext;
+
+    public GameHub(IHubContext<GameHub> hubContext)
+    {
+        _hubContext = hubContext;
+    }
+
     // simple global tracking to allow only two players per game and a global waiting slot
     private static readonly ConcurrentDictionary<string, GameInstance> Games = new();
     private static readonly ConcurrentDictionary<string, string> PlayerGame = new(); // connectionId -> gameId
@@ -102,28 +109,39 @@ public class GameHub : Hub
         else if (assigned.PlayerCount == 2)
         {
             // both players connected -> start placement phase with 60s timer
-            assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(60);
+            assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(ShipPlacementTimeSeconds);
             // notify both clients
             var playerA = assigned.PlayerA;
             var playerB = assigned.PlayerB;
             if (playerA != null)
-                await Clients.Client(playerA).SendAsync("StartPlacement", 60);
+                await Clients.Client(playerA).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
             if (playerB != null)
-                await Clients.Client(playerB).SendAsync("StartPlacement", 60);
+                await Clients.Client(playerB).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
 
             // start a background task to enforce placement timeout
+            var gameId = assigned.Id; // capture game id before async task
             _ = Task.Run(async () =>
             {
-                await Task.Delay(TimeSpan.FromSeconds(60));
-                // start game even if not all placed
-                lock (_lock)
+                try
                 {
-                    if (!assigned.Started)
+                    await Task.Delay(TimeSpan.FromSeconds(ShipPlacementTimeSeconds));
+                    Console.WriteLine($"[Server] Timeout expired for game {gameId}, checking ship placement");
+
+                    // timeout expired - set cancellation flag (will be handled in hub methods)
+                    lock (_lock)
                     {
-                        assigned.Started = true; // force start
+                        if (Games.TryGetValue(gameId, out var game) && !game.Started)
+                        {
+                            Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
+                            game.Started = true; // mark timeout expired
+                            _ = StartGameIfReady(game); // fire and forget - will cancel if ships weren't placed
+                        }
                     }
                 }
-                await StartGameIfReady(assigned);
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Server] Error in placement timeout task for game {gameId}: {ex.Message}");
+                }
             });
         }
 
@@ -171,7 +189,23 @@ public class GameHub : Hub
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
-        Console.WriteLine($"[Server] Assigning {ships?.Count ?? 0} ships to player {connId} in game {gid}");
+
+        // Check if game should be cancelled due to timeout
+        if (g.ShouldCancelOnNextAction)
+        {
+            Console.WriteLine($"[Server] Game {gid} timeout exceeded - cancelling on PlaceShips");
+            await CancelGame(g, gid, "Placement timeout exceeded");
+            return;
+        }
+
+        // Validate ship placements
+        var validationError = ValidateShipPlacement(ships);
+        if (validationError != null)
+        {
+            Console.WriteLine($"[Server] Ship placement validation failed for {connId}: {validationError}");
+            await CancelGame(g, gid, validationError);
+            return;
+        }
 
         // accept up to 10 unique valid positions
         var unique = ships?.Distinct().Take(10).ToList() ?? new List<Point>();
@@ -186,6 +220,67 @@ public class GameHub : Hub
             g.Started = true;
             await StartGameIfReady(g);
         }
+    }
+
+    private string? ValidateShipPlacement(List<Point>? ships)
+    {
+        if (ships == null || ships.Count == 0)
+            return null; // Allow empty placements (game will start with 0 ships)
+
+        // Check for duplicate positions
+        if (ships.Count != ships.Distinct().Count())
+            return "Ship placement contains duplicate positions";
+
+        // Check if ships are within board bounds
+        foreach (var ship in ships)
+        {
+            if (ship.X < 0 || ship.X >= Board.Size || ship.Y < 0 || ship.Y >= Board.Size)
+                return $"Ship at ({ship.X}, {ship.Y}) is outside board bounds (0-{Board.Size - 1})";
+        }
+
+        // Check if more than 10 ships
+        if (ships.Count > 10)
+            return "Cannot place more than 10 ships";
+
+        return null; // Valid placement
+    }
+
+    private async Task CancelGame(GameInstance g, string gid, string reason)
+    {
+        Console.WriteLine($"[Server] Cancelling game {gid}: {reason}");
+
+        // Notify both players
+        var message = $"Game cancelled: {reason}";
+        Console.WriteLine($"[Server] Sending GameCancelled to playerA={g.PlayerA} and playerB={g.PlayerB}");
+
+        if (g.PlayerA != null)
+        {
+            try
+            {
+                await _hubContext.Clients.Client(g.PlayerA).SendAsync("GameCancelled", message);
+                Console.WriteLine($"[Server] GameCancelled sent to playerA {g.PlayerA}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server] Failed to send GameCancelled to playerA {g.PlayerA}: {ex.Message}");
+            }
+        }
+
+        if (g.PlayerB != null)
+        {
+            try
+            {
+                await _hubContext.Clients.Client(g.PlayerB).SendAsync("GameCancelled", message);
+                Console.WriteLine($"[Server] GameCancelled sent to playerB {g.PlayerB}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server] Failed to send GameCancelled to playerB {g.PlayerB}: {ex.Message}");
+            }
+        }
+
+        // Clean up game instance
+        CleanupGame(gid, g);
     }
 
     // Client -> server: make move at col,row (col=X,row=Y)
@@ -418,9 +513,8 @@ public class GameHub : Hub
         // ensure both players exist
         if (g.PlayerA == null || g.PlayerB == null) return;
 
-        // default ships for any player who didn't place: empty set
-        if (!g.ReadyA) g.ShipsA = new HashSet<Point>();
-        if (!g.ReadyB) g.ShipsB = new HashSet<Point>();
+        // Check if both players placed ships
+        if (!await CheckShipPlacement(g)) return; // Game was cancelled
 
         // choose starter (PlayerA)
         g.CurrentTurn = g.PlayerA;
@@ -442,7 +536,38 @@ public class GameHub : Hub
         if (other != null)
             await Clients.Client(other).SendAsync("OpponentTurn");
     }
-    
+
+    private async Task<bool> CheckShipPlacement(GameInstance game)
+    {   
+        // If at least one player didn't place ships, cancel game and notify both players
+        if (!game.ReadyA || !game.ReadyB)
+        {
+            var playerAName = game.PlayerA ?? "Player A";
+            var playerBName = game.PlayerB ?? "Player B";
+            
+            string reason;
+            if (!game.ReadyA && !game.ReadyB)
+                reason = "Neither player placed ships in time";
+            else if (!game.ReadyA)
+                reason = "Player A did not place ships in time";
+            else
+                reason = "Player B did not place ships in time";
+
+            Console.WriteLine($"[Server] Game {game.Id} cancelled: {reason}");
+            
+            // Find the game ID for this instance
+            var gid = Games.FirstOrDefault(x => x.Value == game).Key;
+            if (gid != null)
+            {
+                await CancelGame(game, gid, reason);
+            }
+            
+            return false; // Game cancelled
+        }
+
+        // Both players placed ships - game can proceed
+        return true;
+    }
     
     public async Task Ping(string who) => await Clients.Caller.SendAsync("Pong", $"hi {who}");
 

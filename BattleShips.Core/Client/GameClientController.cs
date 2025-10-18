@@ -27,8 +27,15 @@ namespace BattleShips.Client
         public event Action<string?>? MaxPlayersReached;
         public event Action<string?>? OpponentDisconnected;
         public event Action<string?>? GameOver;
+        public event Action<string?>? GameCancelled;
         public event Action<List<Point>, List<Point>?, string?>? DisasterOccurred;
         public event Action? DisasterFinished;
+
+        private void OnGameCancelled(string? message)
+        {
+            Console.WriteLine($"[GameClientController] OnGameCancelled invoked with: {message}");
+            GameCancelled?.Invoke(message);
+        }
 
         public GameClientController(GameClient client, GameModel model)
         {
@@ -58,6 +65,7 @@ namespace BattleShips.Client
             _client.MaxPlayersReached += msg => MaxPlayersReached?.Invoke(msg);
             _client.OpponentDisconnected += msg => OpponentDisconnected?.Invoke(msg);
             _client.GameOver += msg => GameOver?.Invoke(msg);
+            _client.GameCancelled += OnGameCancelled;
             _client.DisasterOccurred += (cells, hits, type) => DisasterOccurred?.Invoke(cells, hits, type);
             _client.DisasterFinished += () => DisasterFinished?.Invoke();
         }

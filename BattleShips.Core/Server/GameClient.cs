@@ -23,6 +23,7 @@ namespace BattleShips.Core
         public event Action<string>? MaxPlayersReached;
         public event Action<string>? OpponentDisconnected;
         public event Action<string>? GameOver;
+        public event Action<string>? GameCancelled;
         public event Action<string>? Error;
         // affected cells, hits-for-this-client, disaster type name
         public event Action<List<Point>, List<Point>, string?>? DisasterOccurred;
@@ -58,6 +59,7 @@ namespace BattleShips.Core
             _conn.On<string>("MaxPlayersReached", m => { Console.WriteLine($"[GameClient] MaxPlayersReached: {m}"); MaxPlayersReached?.Invoke(m); });
             _conn.On<string>("OpponentDisconnected", m => { Console.WriteLine($"[GameClient] OpponentDisconnected: {m}"); OpponentDisconnected?.Invoke(m); });
             _conn.On<string>("GameOver", m => { Console.WriteLine($"[GameClient] GameOver: {m}"); GameOver?.Invoke(m); });
+            _conn.On<string>("GameCancelled", m => { Console.WriteLine($"[GameClient] GameCancelled: {m}"); GameCancelled?.Invoke(m); });
             _conn.On<string>("Error", m => { Console.WriteLine($"[GameClient] Error: {m}"); Error?.Invoke(m); });
             _conn.On<List<Point>, List<Point>, string?>("DisasterOccurred", (affected, hitsForMe, type) => { Console.WriteLine($"[GameClient] DisasterOccurred -> {affected.Count} cells type={type}"); DisasterOccurred?.Invoke(affected, hitsForMe, type); });
             _conn.On<int>("DisasterCountdown", v => { Console.WriteLine($"[GameClient] DisasterCountdown -> {v}"); DisasterCountdownChanged?.Invoke(v); });

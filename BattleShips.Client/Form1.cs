@@ -178,6 +178,7 @@ namespace BattleShips.Client
 
             _controller.MoveResult += (col, row, hit, remaining) => BeginInvoke(() =>
             {
+                Console.WriteLine("[GameClient] MoveResult received");
                 _awaitingMove = false;
                 var p = new Point(col, row);
                 _model.ApplyMoveResult(p, hit);
@@ -187,6 +188,7 @@ namespace BattleShips.Client
 
             _controller.OpponentMoved += (col, row, hit) => BeginInvoke(() =>
             {
+                Console.WriteLine("[GameClient] OpponentMoved received");
                 var p = new Point(col, row);
                 _model.ApplyOpponentMove(p, hit);
                 _lblStatus!.Text = hit ? "Opponent hit your ship!" : "Opponent missed.";
@@ -195,12 +197,14 @@ namespace BattleShips.Client
 
             _controller.MaxPlayersReached += msg => BeginInvoke(() =>
             {
+                Console.WriteLine("[GameClient] MaxPlayersReached received");
                 MessageBox.Show(msg ?? "Server full", "Server", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 _btnConnectLocal!.Enabled = true;
             });
 
             _controller.OpponentDisconnected += msg => BeginInvoke(() =>
             {
+                Console.WriteLine("[GameClient] OpponentDisconnected received");
                 MessageBox.Show(msg ?? "Opponent disconnected", "Server", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 ResetBoards();
                 _model.State = AppState.Menu;
@@ -211,6 +215,7 @@ namespace BattleShips.Client
 
             _controller.GameOver += msg => BeginInvoke(() =>
             {
+                Console.WriteLine("[GameClient] GameOver received");
                 _model.State = AppState.GameOver;
                 MessageBox.Show(msg ?? "Game over", "Game", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 ResetBoards();
@@ -219,13 +224,28 @@ namespace BattleShips.Client
                 _startupPanel!.Visible = true;
             });
 
+            _controller.GameCancelled += msg => BeginInvoke(() =>
+            {
+                Console.WriteLine("[GameClient] GameCancelled received");
+                MessageBox.Show(msg ?? "Game cancelled", "Game Cancelled", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ResetBoards();
+                _model.State = AppState.Menu;
+                // Show existing startup panel instead of creating a new one
+                _lblStatus!.Text = "Game cancelled";
+                _startupPanel!.Visible = true;
+                _btnConnectLocal!.Enabled = true;
+                Invalidate(); // Ensure UI repaints with the updated state
+            });
+
             _controller.Error += msg => BeginInvoke(() =>
             {
+                Console.WriteLine($"[GameClient] Error received: {msg}");
                 MessageBox.Show(msg ?? "Error", "Server", MessageBoxButtons.OK, MessageBoxIcon.Error);
             });
 
             _controller.DisasterOccurred += (cells, hitsForMe, type) => BeginInvoke(() =>
             {
+                Console.WriteLine($"[GameClient] Disaster occurred: {type}");
                 _model.CurrentDisasterName = type ?? "Disaster";
                 _model.IsDisasterAnimating = true;
                 _ = PlayDisasterAnimationAsync(cells, hitsForMe);
@@ -233,6 +253,7 @@ namespace BattleShips.Client
 
             _controller.DisasterFinished += () => BeginInvoke(() =>
             {
+                Console.WriteLine("[GameClient] Disaster finished");
                 _model.IsDisasterAnimating = false;
                 _model.AnimatedCells.Clear();
                 Invalidate();
