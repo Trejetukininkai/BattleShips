@@ -34,7 +34,30 @@ await app.RunAsync();
 
 public class GameHub : Hub
 {
-    // private readonly IHubContext<GameHub>? _hubContext;
+    public const int ShipPlacementTimeSeconds = 60;
+    private record MoveResult
+    {
+        public int Col, Row, Remaining, Countdown;
+        public bool Hit;
+        public string? ErrorMessage, GameOverCaller, GameOverOpponent;
+        public DisasterResult? Disaster;
+    }
+
+    private record DisasterResult
+    {
+        public string? TypeName;
+        public List<Point> Affected = new();
+        public List<Point> HitsForA = new();
+        public List<Point> HitsForB = new();
+    }
+
+    private readonly IHubContext<GameHub> _hubContext;
+
+    public GameHub(IHubContext<GameHub> hubContext)
+    {
+        _hubContext = hubContext;
+    }
+
     // simple global tracking to allow only two players per game and a global waiting slot
     private static readonly ConcurrentDictionary<string, GameInstance> Games = new();
     private static readonly ConcurrentDictionary<string, string> PlayerGame = new(); // connectionId -> gameId
@@ -86,28 +109,39 @@ public class GameHub : Hub
         else if (assigned.PlayerCount == 2)
         {
             // both players connected -> start placement phase with 60s timer
-            assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(60);
+            assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(ShipPlacementTimeSeconds);
             // notify both clients
             var playerA = assigned.PlayerA;
             var playerB = assigned.PlayerB;
             if (playerA != null)
-                await Clients.Client(playerA).SendAsync("StartPlacement", 60);
+                await Clients.Client(playerA).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
             if (playerB != null)
-                await Clients.Client(playerB).SendAsync("StartPlacement", 60);
+                await Clients.Client(playerB).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
 
             // start a background task to enforce placement timeout
+            var gameId = assigned.Id; // capture game id before async task
             _ = Task.Run(async () =>
             {
-                await Task.Delay(TimeSpan.FromSeconds(60));
-                // start game even if not all placed
-                lock (_lock)
+                try
                 {
-                    if (!assigned.Started)
+                    await Task.Delay(TimeSpan.FromSeconds(ShipPlacementTimeSeconds));
+                    Console.WriteLine($"[Server] Timeout expired for game {gameId}, checking ship placement");
+
+                    // timeout expired - set cancellation flag (will be handled in hub methods)
+                    lock (_lock)
                     {
-                        assigned.Started = true; // force start
+                        if (Games.TryGetValue(gameId, out var game) && !game.Started)
+                        {
+                            Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
+                            game.Started = true; // mark timeout expired
+                            _ = StartGameIfReady(game); // fire and forget - will cancel if ships weren't placed
+                        }
                     }
                 }
-                await StartGameIfReady(assigned);
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Server] Error in placement timeout task for game {gameId}: {ex.Message}");
+                }
             });
         }
 
@@ -155,7 +189,23 @@ public class GameHub : Hub
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
-        Console.WriteLine($"[Server] Assigning {ships?.Count ?? 0} ships to player {connId} in game {gid}");
+
+        // Check if game should be cancelled due to timeout
+        if (g.ShouldCancelOnNextAction)
+        {
+            Console.WriteLine($"[Server] Game {gid} timeout exceeded - cancelling on PlaceShips");
+            await CancelGame(g, gid, "Placement timeout exceeded");
+            return;
+        }
+
+        // Validate ship placements
+        var validationError = ValidateShipPlacement(ships);
+        if (validationError != null)
+        {
+            Console.WriteLine($"[Server] Ship placement validation failed for {connId}: {validationError}");
+            await CancelGame(g, gid, validationError);
+            return;
+        }
 
         // accept up to 10 unique valid positions
         var unique = ships?.Distinct().Take(10).ToList() ?? new List<Point>();
@@ -172,219 +222,289 @@ public class GameHub : Hub
         }
     }
 
+    private string? ValidateShipPlacement(List<Point>? ships)
+    {
+        if (ships == null || ships.Count == 0)
+            return null; // Allow empty placements (game will start with 0 ships)
+
+        // Check for duplicate positions
+        if (ships.Count != ships.Distinct().Count())
+            return "Ship placement contains duplicate positions";
+
+        // Check if ships are within board bounds
+        foreach (var ship in ships)
+        {
+            if (ship.X < 0 || ship.X >= Board.Size || ship.Y < 0 || ship.Y >= Board.Size)
+                return $"Ship at ({ship.X}, {ship.Y}) is outside board bounds (0-{Board.Size - 1})";
+        }
+
+        // Check if more than 10 ships
+        if (ships.Count > 10)
+            return "Cannot place more than 10 ships";
+
+        return null; // Valid placement
+    }
+
+    private async Task CancelGame(GameInstance g, string gid, string reason)
+    {
+        Console.WriteLine($"[Server] Cancelling game {gid}: {reason}");
+
+        // Notify both players
+        var message = $"Game cancelled: {reason}";
+        Console.WriteLine($"[Server] Sending GameCancelled to playerA={g.PlayerA} and playerB={g.PlayerB}");
+
+        if (g.PlayerA != null)
+        {
+            try
+            {
+                await _hubContext.Clients.Client(g.PlayerA).SendAsync("GameCancelled", message);
+                Console.WriteLine($"[Server] GameCancelled sent to playerA {g.PlayerA}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server] Failed to send GameCancelled to playerA {g.PlayerA}: {ex.Message}");
+            }
+        }
+
+        if (g.PlayerB != null)
+        {
+            try
+            {
+                await _hubContext.Clients.Client(g.PlayerB).SendAsync("GameCancelled", message);
+                Console.WriteLine($"[Server] GameCancelled sent to playerB {g.PlayerB}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server] Failed to send GameCancelled to playerB {g.PlayerB}: {ex.Message}");
+            }
+        }
+
+        // Clean up game instance
+        CleanupGame(gid, g);
+    }
+
     // Client -> server: make move at col,row (col=X,row=Y)
     public async Task MakeMove(int col, int row)
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] MakeMove called by {connId} => ({col},{row})");
-        GameInstance? g;
-        string? gid;
-        if (!PlayerGame.TryGetValue(connId, out gid) || !Games.TryGetValue(gid, out g))
+
+        if (!TryGetGame(connId, out var g, out var gid))
         {
-            Console.WriteLine($"[Server] MakeMove: game not found for conn {connId}");
-            await Clients.Caller.SendAsync("Error", "Game not found");
+            await SendError(connId, "Game not found");
             return;
         }
-        // reject moves while a disaster event is in progress (server authoritative)
-        if (g.EventInProgress)
+
+        if (g!.EventInProgress)
         {
-            Console.WriteLine($"[Server] MakeMove rejected: event in progress for game={gid} conn={connId}");
-            await Clients.Caller.SendAsync("Error", "Event in progress");
+            await SendError(connId, "Event in progress");
             return;
         }
+
         Console.WriteLine($"[Server] MakeMove: found game {gid} currentTurn={g.CurrentTurn}");
 
-        // prepare data to send after we release the lock
-        #pragma warning disable CS0219 // Variable is assigned but its value is never used
-        bool callerLost = false;
-
-        var toCaller_MoveResult = (col:0, row:0, hit:false, remaining:0);
-        var toOpponent_OpponentMoved = (col:0, row:0, hit:false);
-        string? toCaller_GameOver = null;
-        string? toOpponent_GameOver = null;
-        int countdownToSend = -1;
-        #pragma warning restore CS0219 // Variable is assigned but its value is never used
-        List<Point>? disasterAffected = null;
-        List<Point>? hitsForA = null;
-        List<Point>? hitsForB = null;
-
-        // send the disaster generator name so client can display it during animation
-        string? disasterTypeName = null;
+        MoveResult result;
 
         lock (_lock)
         {
-            Console.WriteLine($"[Server] MakeMove: inside lock for game={gid}");
-            // validate turn & state while locked
-            if (!g.Started)
-            {
-                Console.WriteLine($"[Server] MakeMove: game not started yet for {gid}");
-                // still send error outside lock
-                // mark by setting toCaller_GameOver as special message (or simply return)
-                // simpler: throw out and send error immediately (no state change) 
-                // but here we'll check and return
-                // NOTE: do not await under lock in production
-            }
+            result = HandleMoveUnderLock(g, gid, connId, col, row);
+        }
 
-            if (g.CurrentTurn != connId)
-            {
-                Console.WriteLine($"[Server] MakeMove: NOT your turn! conn={connId} currentTurn={g.CurrentTurn}");
-                toCaller_GameOver = "Not your turn";
-            }
-            else
-            {
-                Console.WriteLine($"[Server] MakeMove: accepted. Registering shot for game={gid}");
-                var target = new Point(col, row);
-                bool hit = g.RegisterShot(g.Other(connId)!, target, out bool opponentLost);
-                Console.WriteLine($"[Server] Shot result: hit={hit} opponentLost={opponentLost}");
+        await ProcessMoveResults(g, gid, connId, result);
+    }
 
-                // prepare move result to send
-                var remaining = g.GetRemainingShips(g.Other(connId)!);
-                toCaller_MoveResult = (col, row, hit, remaining);
-                toOpponent_OpponentMoved = (col, row, hit);
-
-                if (opponentLost)
-                {
-                    // prepare game over messages and cleanup
-                    toCaller_GameOver = "You win!";
-                    toOpponent_GameOver = "You lose.";
-                    // remove from dictionaries right away
-                    Games.TryRemove(gid, out _);
-                    if (g.PlayerA != null) PlayerGame.TryRemove(g.PlayerA, out _);
-                    if (g.PlayerB != null) PlayerGame.TryRemove(g.PlayerB, out _);
-                }
-                else
-                {
-                    // turn logic
-                    if (!hit)
-                    {
-                        g.SwitchTurn();
-                    }
-
-                    // --- disaster: decrement countdown per turn, execute when triggers ---
-                    if (g.GameMode != null)
-                    {
-                        var before = g.GameMode.EventGenerator?.GetDisasterCountdown() ?? -1;
-                        // Console.WriteLine($"[Server] Before decrement: game={gid} countdown={before}");
-                        if (g.GameMode.DecrementCountdown())
-                        {
-                            Console.WriteLine($"[Server] Disaster triggered for game={gid}");
-                            var gen = g.GameMode.EventGenerator;
-                            disasterTypeName = gen?.GetEventName();
-                            Console.WriteLine($"[Server] Generator type: {gen?.GetType().Name}");
-                            // Generate affected cells and apply to server state while locked
-                            var affected = gen!.CauseDisaster() ?? new List<Point>();
-                            Console.WriteLine($"[Server] Disaster affected count: {affected.Count}");
-                            if (affected.Count > 0)
-                            {
-                                disasterAffected = affected;
-                                hitsForA = new List<Point>();
-                                hitsForB = new List<Point>();
-                                foreach (var p in affected)
-                                {
-                                    if (g.ShipsA.Remove(p)) hitsForA.Add(p);
-                                    if (g.ShipsB.Remove(p)) hitsForB.Add(p);
-                                }
-                            }
-                            g.EventInProgress = true;
-                            // pick next generator and reset countdown (do this under lock)
-                            g.GameMode.SelectRandomEventGenerator();
-                            g.GameMode.ResetEventGenerator();
-                        }
-                        var after = g.GameMode.EventGenerator?.GetDisasterCountdown() ?? -1;
-                        // Console.WriteLine($"[Server] After decrement: game={gid} countdown={after}");
-                    }
-
-                    // compute countdown to send
-                    countdownToSend = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
-                }
-            }
-        } // end lock
-
-        // send immediate error if not your turn
-        if (toCaller_GameOver == "Not your turn")
+    private bool TryGetGame(string connId, out GameInstance? game, out string gid)
+    {
+        game = null!;
+        gid = null!;
+        if (!PlayerGame.TryGetValue(connId, out gid!) || !Games.TryGetValue(gid, out game))
         {
-            Console.WriteLine($"[Server] Rejecting move: Not your turn for conn={connId} (currentTurn={g.CurrentTurn})");
-            await Clients.Caller.SendAsync("Error", "Not your turn");
+            Console.WriteLine($"[Server] MakeMove: game not found for conn {connId}");
+            return false;
+        }
+        return true;
+    }
+    private async Task SendError(string connId, string message)
+    {
+        Console.WriteLine($"[Server] Error for {connId}: {message}");
+        await Clients.Client(connId).SendAsync("Error", message);
+    }
+    private MoveResult HandleMoveUnderLock(GameInstance g, string gid, string connId, int col, int row)
+    {
+        var result = new MoveResult();
+
+        if (!g.Started)
+        {
+            result.ErrorMessage = "Game not started";
+            return result;
+        }
+
+        if (g.CurrentTurn != connId)
+        {
+            result.ErrorMessage = "Not your turn";
+            return result;
+        }
+
+        Console.WriteLine($"[Server] Registering shot for game={gid}");
+        var target = new Point(col, row);
+        bool hit = g.RegisterShot(g.Other(connId)!, target, out bool opponentLost);
+
+        result.Col = col;
+        result.Row = row;
+        result.Hit = hit;
+        result.Remaining = g.GetRemainingShips(g.Other(connId)!);
+
+        if (opponentLost)
+        {
+            result.GameOverCaller = "You win!";
+            result.GameOverOpponent = "You lose.";
+            CleanupGame(gid, g);
+        }
+        else
+        {
+            if (!hit)
+                g.SwitchTurn();
+
+            result.Disaster = CheckForDisaster(g, gid);
+        }
+
+        result.Countdown = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
+        return result;
+    }
+    private DisasterResult? CheckForDisaster(GameInstance g, string gid)
+    {
+        if (g.GameMode == null) return null;
+
+        if (!g.GameMode.DecrementCountdown()) return null;
+
+        var gen = g.GameMode.EventGenerator;
+        var affected = gen?.CauseDisaster() ?? new List<Point>();
+
+        if (affected.Count == 0) return null;
+
+        var hitsForA = new List<Point>();
+        var hitsForB = new List<Point>();
+
+        foreach (var p in affected)
+        {
+            if (g.ShipsA.Remove(p)) hitsForA.Add(p);
+            if (g.ShipsB.Remove(p)) hitsForB.Add(p);
+        }
+
+        g.EventInProgress = true;
+        g.GameMode.SelectRandomEventGenerator();
+        g.GameMode.ResetEventGenerator();
+
+        return new DisasterResult
+        {
+            TypeName = gen?.GetEventName(),
+            Affected = affected,
+            HitsForA = hitsForA,
+            HitsForB = hitsForB
+        };
+    }
+
+    private async Task ProcessMoveResults(GameInstance g, string gid, string connId, MoveResult result)
+    {
+        if (!string.IsNullOrEmpty(result.ErrorMessage))
+        {
+            await SendError(connId, result.ErrorMessage);
             return;
         }
 
-        // send normal move notifications
-        await Clients.Caller.SendAsync("MoveResult", toCaller_MoveResult.col, toCaller_MoveResult.row, toCaller_MoveResult.hit, toCaller_MoveResult.remaining);
+        // Send move updates
+        await Clients.Caller.SendAsync("MoveResult", result.Col, result.Row, result.Hit, result.Remaining);
+
         var opp = g.Other(connId);
         if (opp != null)
-            await Clients.Client(opp).SendAsync("OpponentMoved", toOpponent_OpponentMoved.col, toOpponent_OpponentMoved.row, toOpponent_OpponentMoved.hit);
+            await Clients.Client(opp).SendAsync("OpponentMoved", result.Col, result.Row, result.Hit);
 
-        // send turn notifications (current turn might have changed inside lock)
-        if (Games.TryGetValue(gid, out var freshGame))
+        // Turn updates
+        await BroadcastTurnUpdates(gid, g);
+
+        // Disaster updates
+        if (result.Disaster != null)
+            await HandleDisasterNotifications(g, gid, result.Disaster);
+
+        // Game over
+        if (result.GameOverCaller != null)
         {
-            if (freshGame.CurrentTurn != null)
-            {
-                await Clients.Client(freshGame.CurrentTurn).SendAsync("YourTurn");
-                var other = freshGame.Other(freshGame.CurrentTurn);
-                if (other != null)
-                    await Clients.Client(other).SendAsync("OpponentTurn");
-            }
+            await Clients.Caller.SendAsync("GameOver", result.GameOverCaller);
+            if (opp != null) await Clients.Client(opp).SendAsync("GameOver", result.GameOverOpponent);
         }
 
-        // if disaster occurred, notify both clients (affected + which were hits for that client)
-        if (disasterAffected != null)
+        // Countdown
+        await BroadcastCountdown(g, result.Countdown);
+    }
+
+    private void CleanupGame(string gid, GameInstance g)
+    {
+        Games.TryRemove(gid, out _);
+        if (g.PlayerA != null) PlayerGame.TryRemove(g.PlayerA, out _);
+        if (g.PlayerB != null) PlayerGame.TryRemove(g.PlayerB, out _);
+        Console.WriteLine($"[Server] Cleaned up game {gid}");
+    }
+
+    private async Task BroadcastTurnUpdates(string gid, GameInstance g)
+    {
+        if (!Games.TryGetValue(gid, out var freshGame)) return;
+        if (freshGame.CurrentTurn == null) return;
+
+        await Clients.Client(freshGame.CurrentTurn).SendAsync("YourTurn");
+        var other = freshGame.Other(freshGame.CurrentTurn);
+        if (other != null)
+            await Clients.Client(other).SendAsync("OpponentTurn");
+    }
+    private async Task HandleDisasterNotifications(GameInstance g, string gid, DisasterResult disaster)
+    {
+        Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disaster.TypeName})");
+
+        if (g.PlayerA != null)
+            await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForA, disaster.TypeName);
+        if (g.PlayerB != null)
+            await Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForB, disaster.TypeName);
+
+        // Remaining ships after disaster
+        if (g.PlayerA != null)
+            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.ShipsA.Count);
+        if (g.PlayerB != null)
+            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.ShipsB.Count);
+
+        // Schedule animation cleanup (non-blocking)
+        try
         {
-            Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disasterTypeName})");
-            if (g.PlayerA != null)
-                await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disasterAffected, hitsForA, disasterTypeName);
-            if (g.PlayerB != null)
-                await Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", disasterAffected, hitsForB, disasterTypeName);
+            var affectedCount = disaster.Affected.Count;
+            var animationMs = affectedCount * (300 + 120) + 400;
 
-            // also notify remaining counts
-            if (g.PlayerA != null)
-                await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.ShipsA.Count);
-            if (g.PlayerB != null)
-                await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.ShipsB.Count);
-
-            // schedule clearing of EventInProgress and inform clients when finished
-            try
+            _ = Task.Run(async () =>
             {
-                var affectedCount = disasterAffected.Count;
-                var animationMs = affectedCount * (300 + 120) + 400; // match client animation timings + buffer
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        await Task.Delay(animationMs);
-                        lock (_lock) { g.EventInProgress = false; }
-                        // if (g.PlayerA != null) await _hubContext!.Clients.Client(g.PlayerA).SendAsync("DisasterFinished");
-                        // if (g.PlayerB != null) await _hubContext!.Clients.Client(g.PlayerB).SendAsync("DisasterFinished");
-                        Console.WriteLine($"[Server] Disaster finished for game={gid}");
-                    }
-                    catch (Exception ex) { Console.WriteLine($"[Server] Disaster finish task failed: {ex}"); }
-                });
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Server] Failed to schedule disaster finish: {ex}");
-            }
-            finally
-            {
-                // reset countdown to send since event just occurred
-                countdownToSend = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
-            }
+                    await Task.Delay(animationMs);
+                    lock (_lock) { g.EventInProgress = false; }
+                    Console.WriteLine($"[Server] Disaster finished for game={gid}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Server] Disaster finish task failed: {ex}");
+                }
+            });
         }
-
-        // broadcast updated countdown if computed
-        if (countdownToSend >= -1)
+        catch (Exception ex)
         {
-            Console.WriteLine($"[Server] Broadcasting DisasterCountdown={countdownToSend} for game={gid}");
-            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("DisasterCountdown", countdownToSend);
-            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("DisasterCountdown", countdownToSend);
+            Console.WriteLine($"[Server] Failed to schedule disaster finish: {ex}");
         }
+    }
 
-        // finally send game over messages (if prepared)
-        if (toCaller_GameOver == "You win!")
-        {
-            if (connId != null) await Clients.Caller.SendAsync("GameOver", "You win!");
-            var opponentId = g.Other(connId!);
-            if (opponentId != null) await Clients.Client(opponentId).SendAsync("GameOver", "You lose.");
-        }
+    private async Task BroadcastCountdown(GameInstance g, int countdown)
+    {
+        if (countdown < 0) return;
+
+        Console.WriteLine($"[Server] Broadcasting DisasterCountdown={countdown}");
+        if (g.PlayerA != null)
+            await Clients.Client(g.PlayerA).SendAsync("DisasterCountdown", countdown);
+        if (g.PlayerB != null)
+            await Clients.Client(g.PlayerB).SendAsync("DisasterCountdown", countdown);
     }
 
     private async Task StartGameIfReady(GameInstance g)
@@ -393,9 +513,8 @@ public class GameHub : Hub
         // ensure both players exist
         if (g.PlayerA == null || g.PlayerB == null) return;
 
-        // default ships for any player who didn't place: empty set
-        if (!g.ReadyA) g.ShipsA = new HashSet<Point>();
-        if (!g.ReadyB) g.ShipsB = new HashSet<Point>();
+        // Check if both players placed ships
+        if (!await CheckShipPlacement(g)) return; // Game was cancelled
 
         // choose starter (PlayerA)
         g.CurrentTurn = g.PlayerA;
@@ -417,6 +536,39 @@ public class GameHub : Hub
         if (other != null)
             await Clients.Client(other).SendAsync("OpponentTurn");
     }
+
+    private async Task<bool> CheckShipPlacement(GameInstance game)
+    {   
+        // If at least one player didn't place ships, cancel game and notify both players
+        if (!game.ReadyA || !game.ReadyB)
+        {
+            var playerAName = game.PlayerA ?? "Player A";
+            var playerBName = game.PlayerB ?? "Player B";
+            
+            string reason;
+            if (!game.ReadyA && !game.ReadyB)
+                reason = "Neither player placed ships in time";
+            else if (!game.ReadyA)
+                reason = "Player A did not place ships in time";
+            else
+                reason = "Player B did not place ships in time";
+
+            Console.WriteLine($"[Server] Game {game.Id} cancelled: {reason}");
+            
+            // Find the game ID for this instance
+            var gid = Games.FirstOrDefault(x => x.Value == game).Key;
+            if (gid != null)
+            {
+                await CancelGame(game, gid, reason);
+            }
+            
+            return false; // Game cancelled
+        }
+
+        // Both players placed ships - game can proceed
+        return true;
+    }
+    
     public async Task Ping(string who) => await Clients.Caller.SendAsync("Pong", $"hi {who}");
 
     public async Task SendHello(HelloMessage msg)

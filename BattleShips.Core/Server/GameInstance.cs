@@ -10,12 +10,15 @@ namespace BattleShips.Core
         public string? PlayerB { get; set; }
         public HashSet<Point> ShipsA { get; set; } = new();
         public HashSet<Point> ShipsB { get; set; } = new();
-        public bool ReadyA { get; set; }
-        public bool ReadyB { get; set; }
+        public bool ReadyA { get; set; } // when true, player A has placed ships
+        public bool ReadyB { get; set; } // when true, player B has placed ships
         public bool Started { get; set; }
         public DateTime PlacementDeadline { get; set; }
         public string? CurrentTurn { get; set; }
         public GameMode? GameMode { get; set; }
+
+        // when true, game should be cancelled on next hub action (due to timeout)
+        public bool ShouldCancelOnNextAction { get; set; } = false;
 
         // when true, server will reject MakeMove requests until cleared
         public bool EventInProgress { get; set; } = false;
