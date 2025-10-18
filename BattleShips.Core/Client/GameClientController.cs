@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Threading.Tasks;
 using BattleShips.Core;
 
-namespace BattleShips.Client
+namespace BattleShips.Core.Client
 {
     /// <summary>
     /// Thin wrapper that exposes GameClient events and methods to the UI layer.
