@@ -126,6 +126,28 @@ namespace BattleShips.Core
                 g.FillEllipse(isHit ? Brushes.Red : Brushes.Gray, x + 10, y + 10, Cell - 20, Cell - 20);
             }
 
+            // animated impact overlay (draw on top of boards) - semi-transparent yellow ring
+            using (var animBrush = new SolidBrush(Color.FromArgb(180, 255, 200, 0)))
+            using (var animPen = new Pen(Color.FromArgb(220, 255, 140, 0), 3))
+            {
+                foreach (var p in model.AnimatedCells)
+                {
+                    // determine whether cell is on left or right board (we animate impacts on both boards if present)
+                    var lx = left.X + p.X * Cell;
+                    var ly = left.Y + p.Y * Cell;
+                    var rx = right.X + p.X * Cell;
+                    var ry = right.Y + p.Y * Cell;
+
+                    // draw small filled circle + ring on left board
+                    if (p.X >= 0 && p.Y >= 0 && p.X < Board.Size && p.Y < Board.Size)
+                    {
+                        // we draw on left board by default (disaster is applied to the board coordinates)
+                        g.FillEllipse(animBrush, lx + 6, ly + 6, Cell - 12, Cell - 12);
+                        g.DrawEllipse(animPen, lx + 6, ly + 6, Cell - 12, Cell - 12);
+                    }
+                }
+            }
+
             // status & countdown
             // const int pad = 8;
             // var statusText = ""; // caller will draw actual text above/beside if desired

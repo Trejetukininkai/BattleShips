@@ -20,6 +20,7 @@ namespace BattleShips.Client
         private Label? _lblStatus;
         private Label? _lblCountdown;
         private System.Windows.Forms.Timer? _uiTimer;
+        private System.Threading.CancellationTokenSource? _disasterCts;
 
         public Form1()
         {
@@ -99,6 +100,18 @@ namespace BattleShips.Client
 
         private void WireClientEvents()
         {
+            // disaster countdown updates
+            _client.DisasterCountdownChanged += value => BeginInvoke(() =>
+            {
+                Console.WriteLine($"[Client] DisasterCountdownChanged -> {value}");
+                _model.DisasterCountdown = value;
+                UpdateCountdownLabel();
+
+                // temporary: also show in status so it's obvious on UI while debugging
+                _lblStatus!.Text = $"Disaster countdown: {value}";
+                Invalidate();
+            });
+
             _client.WaitingForOpponent += msg => BeginInvoke(() =>
             {
                 _model.State = AppState.Waiting;
@@ -197,6 +210,62 @@ namespace BattleShips.Client
             {
                 MessageBox.Show(msg ?? "Error", "Server", MessageBoxButtons.OK, MessageBoxIcon.Error);
             });
+
+            // server will send a list of affected cells when a disaster occurs
+            _client.DisasterOccurred += (cells, hitsForMe, type) =>
+            {
+                BeginInvoke(() =>
+                {
+                    // set disaster name so paint can show it during animation
+                    _model.CurrentDisasterName = type ?? "Disaster";
+                    _model.IsDisasterAnimating = true;
+                    // run the animation (fire-and-forget) and pass hits info
+                    _ = PlayDisasterAnimationAsync(cells, hitsForMe);
+                });
+            };
+        }
+
+        // animate each disaster cell then apply hitsForMe; the model's CurrentDisasterName
+        // is already set by the caller and will be cleared at the end.
+        private async Task PlayDisasterAnimationAsync(List<Point> cells, List<Point>? hitsForMe)
+        {
+            _disasterCts?.Cancel();
+            _disasterCts = new System.Threading.CancellationTokenSource();
+            var token = _disasterCts.Token;
+            try
+            {
+                foreach (var cell in cells)
+                {
+                    token.ThrowIfCancellationRequested();
+                    _model.AnimatedCells.Add(cell);
+                    Invalidate();
+                    await Task.Delay(300, token);
+
+                    // apply effect for this client using hitsForMe list (server authoritative)
+                    var wasHit = hitsForMe != null && hitsForMe.Contains(cell);
+                    if (wasHit)
+                    {
+                        // opponent hit your ship (if this were the player's own board)
+                        _model.ApplyOpponentMove(cell, true);
+                    }
+                    else
+                    {
+                        // no hit for this client; if the disaster affects the opponent board you'd handle that on other client
+                    }
+
+                    _model.AnimatedCells.Remove(cell);
+                    Invalidate();
+                    await Task.Delay(120, token);
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally
+            {
+                _model.IsDisasterAnimating = false;
+                _model.CurrentDisasterName = null;
+                _model.AnimatedCells.Clear();
+                Invalidate();
+            }
         }
 
         private async Task ConnectAsync(string? baseUrl = null)
@@ -227,7 +296,21 @@ namespace BattleShips.Client
         private void UpdateCountdownLabel()
         {
             if (_lblCountdown == null) return;
-            _lblCountdown.Text = _model.PlacementSecondsLeft > 0 ? $"Time left: {_model.PlacementSecondsLeft}s" : "";
+
+            // show placement timer during placement; show disaster countdown during play
+            if (_model.State == AppState.Placement)
+            {
+                _lblCountdown.Text = _model.PlacementSecondsLeft > 0 ? $"Placement: {_model.PlacementSecondsLeft}s" : "";
+                return;
+            }
+
+            if (_model.State == AppState.Playing)
+            {
+                _lblCountdown.Text = _model.DisasterCountdown > 0 ? $"Disaster in {_model.DisasterCountdown} turns" : (_model.DisasterCountdown == 0 ? "Disaster imminent!" : "");
+                return;
+            }
+
+            _lblCountdown.Text = "";
         }
 
         private void ResetBoards()
@@ -268,6 +351,18 @@ namespace BattleShips.Client
                 g.FillRectangle(bg2, countdownRect);
             }
             g.DrawString(countdownText, font, Brushes.Yellow, countdownRect.Left + pad / 2f, countdownRect.Top + pad / 2f);
+
+            // draw disaster name overlay while animating
+            if (_model.IsDisasterAnimating && !string.IsNullOrEmpty(_model.CurrentDisasterName))
+            {
+                using var bigFont = new Font(Font.FontFamily, 14, FontStyle.Bold);
+                var txt = _model.CurrentDisasterName!;
+                var size = g.MeasureString(txt, bigFont);
+                var rect = new RectangleF((ClientSize.Width - size.Width) / 2f - 8, 40, size.Width + 16, size.Height + 8);
+                using var bg = new SolidBrush(Color.FromArgb(200, 0, 0, 0));
+                g.FillRectangle(bg, rect);
+                g.DrawString(txt, bigFont, Brushes.Orange, rect.Left + 8, rect.Top + 4);
+            }
         }
 
         private async void OnMouseClickGrid(object? sender, MouseEventArgs e)

@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Client;
 
-namespace BattleShips.Client
+namespace BattleShips.Core
 {
     public class GameClient : IDisposable
     {
@@ -24,6 +24,9 @@ namespace BattleShips.Client
         public event Action<string>? OpponentDisconnected;
         public event Action<string>? GameOver;
         public event Action<string>? Error;
+        // affected cells, hits-for-this-client, disaster type name
+        public event Action<List<Point>, List<Point>, string?>? DisasterOccurred;
+        public event Action<int>? DisasterCountdownChanged;
 
         public async Task ConnectAsync(string url)
         {
@@ -48,10 +51,13 @@ namespace BattleShips.Client
             _conn.On("OpponentTurn", () => OpponentTurn?.Invoke());
             _conn.On<int,int,bool,int>("MoveResult", (c, r, h, rem) => MoveResult?.Invoke(c, r, h, rem));
             _conn.On<int,int,bool>("OpponentMoved", (c, r, h) => OpponentMoved?.Invoke(c, r, h));
+            
             _conn.On<string>("MaxPlayersReached", m => MaxPlayersReached?.Invoke(m));
             _conn.On<string>("OpponentDisconnected", m => OpponentDisconnected?.Invoke(m));
             _conn.On<string>("GameOver", m => GameOver?.Invoke(m));
             _conn.On<string>("Error", m => Error?.Invoke(m));
+            _conn.On<List<Point>, List<Point>, string?>("DisasterOccurred", (affected, hitsForMe, type) => DisasterOccurred?.Invoke(affected, hitsForMe, type));
+            _conn.On<int>("DisasterCountdown", v => DisasterCountdownChanged?.Invoke(v));
 
             await _conn.StartAsync();
             await _conn.SendAsync("Ping", "client-hello");

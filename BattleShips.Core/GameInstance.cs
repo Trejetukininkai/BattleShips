@@ -1,7 +1,9 @@
 // --- internal simple Game model ---
 using System.Drawing;
 
-public class GameInstance
+namespace BattleShips.Core
+{
+    public class GameInstance
     {
         public string Id { get; }
         public string? PlayerA { get; set; }
@@ -13,6 +15,7 @@ public class GameInstance
         public bool Started { get; set; }
         public DateTime PlacementDeadline { get; set; }
         public string? CurrentTurn { get; set; }
+        public GameMode? GameMode { get; set; }
 
         public GameInstance(string id) { Id = id; }
 
@@ -69,3 +72,4 @@ public class GameInstance
             else CurrentTurn = PlayerA;
         }
     }
+}
