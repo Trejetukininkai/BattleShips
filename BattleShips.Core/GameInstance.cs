@@ -17,6 +17,9 @@ namespace BattleShips.Core
         public string? CurrentTurn { get; set; }
         public GameMode? GameMode { get; set; }
 
+        // when true, server will reject MakeMove requests until cleared
+        public bool EventInProgress { get; set; } = false;
+
         public GameInstance(string id) { Id = id; }
 
         public int PlayerCount => (HasFirstPlayer ? 1 : 0) + (HasSecondPlayer ? 1 : 0);

@@ -43,6 +43,7 @@ public class GameHub : Hub
     public override async Task OnConnectedAsync()
     {
         var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] OnConnectedAsync: conn={connId}");
         GameInstance? assigned = null;
         lock (_lock)
         {
@@ -57,7 +58,12 @@ public class GameHub : Hub
                     // initialize game mode so disaster countdown / generator exists
                     GameMode = new GameMode(shipCount: 10, boardX: Board.Size, boardY: Board.Size)
                 };
+                Console.WriteLine($"[Server] Created new GameInstance id={id} with GameMode");
                 Games[id] = assigned;
+            }
+            else
+            {
+                Console.WriteLine($"[Server] Reusing game id={assigned.Id} for new connection");
             }
 
             // add player
@@ -142,11 +148,13 @@ public class GameHub : Hub
     public async Task PlaceShips(List<Point> ships)
     {
         var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] PlaceShips called by {connId} with {ships?.Count ?? 0} positions");
         if (!PlayerGame.TryGetValue(connId, out var gid) || !Games.TryGetValue(gid, out var g))
         {
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
+        Console.WriteLine($"[Server] Assigning {ships?.Count ?? 0} ships to player {connId} in game {gid}");
 
         // accept up to 10 unique valid positions
         var unique = ships?.Distinct().Take(10).ToList() ?? new List<Point>();
@@ -167,13 +175,23 @@ public class GameHub : Hub
     public async Task MakeMove(int col, int row)
     {
         var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] MakeMove called by {connId} => ({col},{row})");
         GameInstance? g;
         string? gid;
         if (!PlayerGame.TryGetValue(connId, out gid) || !Games.TryGetValue(gid, out g))
         {
+            Console.WriteLine($"[Server] MakeMove: game not found for conn {connId}");
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
+        // reject moves while a disaster event is in progress (server authoritative)
+        if (g.EventInProgress)
+        {
+            Console.WriteLine($"[Server] MakeMove rejected: event in progress for game={gid} conn={connId}");
+            await Clients.Caller.SendAsync("Error", "Event in progress");
+            return;
+        }
+        Console.WriteLine($"[Server] MakeMove: found game {gid} currentTurn={g.CurrentTurn}");
 
         // prepare data to send after we release the lock
         bool callerLost = false;
@@ -191,9 +209,11 @@ public class GameHub : Hub
 
         lock (_lock)
         {
+            Console.WriteLine($"[Server] MakeMove: inside lock for game={gid}");
             // validate turn & state while locked
             if (!g.Started)
             {
+                Console.WriteLine($"[Server] MakeMove: game not started yet for {gid}");
                 // still send error outside lock
                 // mark by setting toCaller_GameOver as special message (or simply return)
                 // simpler: throw out and send error immediately (no state change) 
@@ -203,16 +223,15 @@ public class GameHub : Hub
 
             if (g.CurrentTurn != connId)
             {
-                // Not your turn -> return immediately (no state change)
-                // send error outside lock
-                // we set a special flag by setting toCaller_GameOver to "Not your turn"
+                Console.WriteLine($"[Server] MakeMove: NOT your turn! conn={connId} currentTurn={g.CurrentTurn}");
                 toCaller_GameOver = "Not your turn";
-                // skip other state changes
             }
             else
             {
+                Console.WriteLine($"[Server] MakeMove: accepted. Registering shot for game={gid}");
                 var target = new Point(col, row);
                 bool hit = g.RegisterShot(g.Other(connId)!, target, out bool opponentLost);
+                Console.WriteLine($"[Server] Shot result: hit={hit} opponentLost={opponentLost}");
 
                 // prepare move result to send
                 var remaining = g.GetRemainingShips(g.Other(connId)!);
@@ -241,7 +260,7 @@ public class GameHub : Hub
                     if (g.GameMode != null)
                     {
                         var before = g.GameMode.EventGenerator?.GetDisasterCountdown() ?? -1;
-                        Console.WriteLine($"[Server] Before decrement: game={gid} countdown={before}");
+                        // Console.WriteLine($"[Server] Before decrement: game={gid} countdown={before}");
                         if (g.GameMode.DecrementCountdown())
                         {
                             Console.WriteLine($"[Server] Disaster triggered for game={gid}");
@@ -250,6 +269,7 @@ public class GameHub : Hub
                             Console.WriteLine($"[Server] Generator type: {gen?.GetType().Name}");
                             // Generate affected cells and apply to server state while locked
                             var affected = gen.CauseDisaster() ?? new List<Point>();
+                            Console.WriteLine($"[Server] Disaster affected count: {affected.Count}");
                             if (affected.Count > 0)
                             {
                                 disasterAffected = affected;
@@ -261,12 +281,13 @@ public class GameHub : Hub
                                     if (g.ShipsB.Remove(p)) hitsForB.Add(p);
                                 }
                             }
+                            g.EventInProgress = true;
                             // pick next generator and reset countdown (do this under lock)
                             g.GameMode.SelectRandomEventGenerator();
                             g.GameMode.ResetEventGenerator();
                         }
                         var after = g.GameMode.EventGenerator?.GetDisasterCountdown() ?? -1;
-                        Console.WriteLine($"[Server] After decrement: game={gid} countdown={after}");
+                        // Console.WriteLine($"[Server] After decrement: game={gid} countdown={after}");
                     }
 
                     // compute countdown to send
@@ -278,6 +299,7 @@ public class GameHub : Hub
         // send immediate error if not your turn
         if (toCaller_GameOver == "Not your turn")
         {
+            Console.WriteLine($"[Server] Rejecting move: Not your turn for conn={connId} (currentTurn={g.CurrentTurn})");
             await Clients.Caller.SendAsync("Error", "Not your turn");
             return;
         }
@@ -303,6 +325,7 @@ public class GameHub : Hub
         // if disaster occurred, notify both clients (affected + which were hits for that client)
         if (disasterAffected != null)
         {
+            Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disasterTypeName})");
             if (g.PlayerA != null)
                 await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disasterAffected, hitsForA, disasterTypeName);
             if (g.PlayerB != null)
@@ -313,6 +336,29 @@ public class GameHub : Hub
                 await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.ShipsA.Count);
             if (g.PlayerB != null)
                 await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.ShipsB.Count);
+
+            // schedule clearing of EventInProgress and inform clients when finished
+            try
+            {
+                var affectedCount = disasterAffected.Count;
+                var animationMs = affectedCount * (300 + 120) + 400; // match client animation timings + buffer
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(animationMs);
+                        lock (_lock) { g.EventInProgress = false; }
+                        if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("DisasterFinished");
+                        if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("DisasterFinished");
+                        Console.WriteLine($"[Server] Disaster finished for game={gid}");
+                    }
+                    catch (Exception ex) { Console.WriteLine($"[Server] Disaster finish task failed: {ex}"); }
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server] Failed to schedule disaster finish: {ex}");
+            }
         }
 
         // broadcast updated countdown if computed
@@ -334,6 +380,7 @@ public class GameHub : Hub
 
     private async Task StartGameIfReady(GameInstance g)
     {
+        Console.WriteLine($"[Server] StartGameIfReady called for game {g.Id}");
         // ensure both players exist
         if (g.PlayerA == null || g.PlayerB == null) return;
 
@@ -361,56 +408,6 @@ public class GameHub : Hub
         if (other != null)
             await Clients.Client(other).SendAsync("OpponentTurn");
     }
-    private async Task ExecuteEventStrategy(GameInstance g)
-    {
-        var gen = g.GameMode?.EventGenerator;
-        if (gen == null) return;
-
-        // Generate affected cells
-        var affected = gen.CauseDisaster() ?? new List<Point>();
-        if (affected.Count == 0) return;
-
-        // identify event type name for clients (friendly label)
-        var typeName = gen.GetType().Name; // e.g. "MeteorStrikeGenerator" - you can map to nicer names if desired
-
-        // compute hits for each player, and remove ships from server state
-        var hitsA = new List<Point>();
-        var hitsB = new List<Point>();
-
-        foreach (var p in affected)
-        {
-            if (g.ShipsA.Remove(p)) hitsA.Add(p);
-            if (g.ShipsB.Remove(p)) hitsB.Add(p);
-        }
-
-        // Notify each player: send affected cells plus which of those hit that player and the disaster type
-        if (g.PlayerA != null)
-            await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", affected, hitsA, typeName);
-
-        if (g.PlayerB != null)
-            await Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", affected, hitsB, typeName);
-
-        // Optionally: send per-player remaining counts
-        if (g.PlayerA != null)
-            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.ShipsA.Count);
-        if (g.PlayerB != null)
-            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.ShipsB.Count);
-
-        // check for victory (if a player lost all ships)
-        if (g.ShipsA.Count == 0 || g.ShipsB.Count == 0)
-        {
-            var winner = g.ShipsA.Count == 0 ? g.PlayerB : g.PlayerA;
-            var loser = g.ShipsA.Count == 0 ? g.PlayerA : g.PlayerB;
-            if (winner != null) await Clients.Client(winner).SendAsync("GameOver", "You win (disaster)!");
-            if (loser != null) await Clients.Client(loser).SendAsync("GameOver", "You lose (disaster).");
-
-            // cleanup
-            Games.TryRemove(g.Id, out _);
-            if (g.PlayerA != null) PlayerGame.TryRemove(g.PlayerA, out _);
-            if (g.PlayerB != null) PlayerGame.TryRemove(g.PlayerB, out _);
-        }
-    }
-
     public async Task Ping(string who) => await Clients.Caller.SendAsync("Pong", $"hi {who}");
 
     public async Task SendHello(HelloMessage msg)

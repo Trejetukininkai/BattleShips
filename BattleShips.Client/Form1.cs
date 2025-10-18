@@ -14,6 +14,9 @@ namespace BattleShips.Client
         private readonly GameModel _model = new GameModel();
         private readonly BoardRenderer _renderer = new BoardRenderer(cell: 40, margin: 80);
 
+        // prevent duplicate move sends while a move is being processed by the server
+        private bool _awaitingMove = false;
+
         // UI
         private Panel? _startupPanel;
         private Button? _btnConnectLocal;
@@ -60,12 +63,14 @@ namespace BattleShips.Client
                 Location = new Point(50, 30)
             };
 
+            // status labels live on the main form (not inside the startup panel)
             _lblStatus = new Label
             {
                 Text = "Not connected",
                 ForeColor = Color.White,
                 Location = new Point(50, 72),
-                AutoSize = true
+                AutoSize = true,
+                Visible = true
             };
 
             _lblCountdown = new Label
@@ -73,7 +78,8 @@ namespace BattleShips.Client
                 Text = "",
                 ForeColor = Color.Yellow,
                 Location = new Point(50, 100),
-                AutoSize = true
+                AutoSize = true,
+                Visible = true
             };
 
             _btnConnectLocal.Click += async (_, __) =>
@@ -96,6 +102,19 @@ namespace BattleShips.Client
             _startupPanel.Controls.Add(_lblStatus);
             _startupPanel.Controls.Add(_lblCountdown);
             Controls.Add(_startupPanel);
+            // add the status labels to the form so they remain visible after hiding _startupPanel
+        }
+
+        private async Task ConnectAsync(string? baseUrl = null)
+        {
+            baseUrl ??= Environment.GetEnvironmentVariable("API_URL") ?? "http://localhost:5000";
+            Console.WriteLine($"[Client] Connecting to {baseUrl}/game ...");
+            await _client.ConnectAsync(baseUrl);
+            Console.WriteLine("[Client] Connected to server");
+            ResetBoards();
+            _model.State = AppState.Waiting;
+            _startupPanel!.Visible = false;
+            Text = "Connected to BattleShips server";
         }
 
         private void WireClientEvents()
@@ -108,12 +127,13 @@ namespace BattleShips.Client
                 UpdateCountdownLabel();
 
                 // temporary: also show in status so it's obvious on UI while debugging
-                _lblStatus!.Text = $"Disaster countdown: {value}";
+                // _lblStatus!.Text = $"Disaster countdown: {value}";
                 Invalidate();
             });
 
             _client.WaitingForOpponent += msg => BeginInvoke(() =>
             {
+                Console.WriteLine($"[Client] WaitingForOpponent: {msg}");
                 _model.State = AppState.Waiting;
                 _lblStatus!.Text = msg;
                 Invalidate();
@@ -121,6 +141,7 @@ namespace BattleShips.Client
 
             _client.StartPlacement += secs => BeginInvoke(() =>
             {
+                Console.WriteLine($"[Client] StartPlacement: {secs}s");
                 _model.State = AppState.Placement;
                 _model.PlacementSecondsLeft = secs;
                 _lblStatus!.Text = $"Placement: place 10 ships ({_model.YourShips.Count}/10)";
@@ -131,6 +152,7 @@ namespace BattleShips.Client
 
             _client.PlacementAck += count => BeginInvoke(() =>
             {
+                Console.WriteLine($"[Client] PlacementAck: {count}");
                 _model.State = AppState.Waiting;
                 _uiTimer?.Stop();
                 _model.PlacementSecondsLeft = 0;
@@ -141,6 +163,7 @@ namespace BattleShips.Client
 
             _client.GameStarted += youStart => BeginInvoke(() =>
             {
+                Console.WriteLine($"[Client] GameStarted: youStart={youStart}");
                 _model.State = AppState.Playing;
                 _model.IsMyTurn = youStart;
                 _lblStatus!.Text = youStart ? "Your turn" : "Opponent's turn";
@@ -152,6 +175,9 @@ namespace BattleShips.Client
 
             _client.YourTurn += () => BeginInvoke(() =>
             {
+                Console.WriteLine("[Client] YourTurn received");
+                // ensure client can send moves again when server grants the turn
+                _awaitingMove = false;
                 _model.IsMyTurn = true;
                 _lblStatus!.Text = "Your turn";
                 Invalidate();
@@ -159,6 +185,7 @@ namespace BattleShips.Client
 
             _client.OpponentTurn += () => BeginInvoke(() =>
             {
+                Console.WriteLine("[Client] OpponentTurn received");
                 _model.IsMyTurn = false;
                 _lblStatus!.Text = "Opponent's turn";
                 Invalidate();
@@ -166,6 +193,9 @@ namespace BattleShips.Client
 
             _client.MoveResult += (col, row, hit, remaining) => BeginInvoke(() =>
             {
+                Console.WriteLine($"[Client] MoveResult: ({col},{row}) hit={hit} remaining={remaining}");
+                // server acknowledged our move — clear the awaiting flag so user can click next turn when allowed
+                _awaitingMove = false;
                 var p = new Point(col, row);
                 _model.ApplyMoveResult(p, hit);
                 _lblStatus!.Text = hit ? $"Hit! Opponent ships left: {remaining}" : $"Miss. Opponent ships left: {remaining}";
@@ -174,6 +204,7 @@ namespace BattleShips.Client
 
             _client.OpponentMoved += (col, row, hit) => BeginInvoke(() =>
             {
+                Console.WriteLine($"[Client] OpponentMoved: ({col},{row}) hit={hit}");
                 var p = new Point(col, row);
                 _model.ApplyOpponentMove(p, hit);
                 _lblStatus!.Text = hit ? "Opponent hit your ship!" : "Opponent missed.";
@@ -216,6 +247,7 @@ namespace BattleShips.Client
             {
                 BeginInvoke(() =>
                 {
+                    Console.WriteLine($"[Client] DisasterOccurred received: type={type} cells={cells.Count} hitsForMe={hitsForMe?.Count ?? 0}");
                     // set disaster name so paint can show it during animation
                     _model.CurrentDisasterName = type ?? "Disaster";
                     _model.IsDisasterAnimating = true;
@@ -223,12 +255,22 @@ namespace BattleShips.Client
                     _ = PlayDisasterAnimationAsync(cells, hitsForMe);
                 });
             };
+
+            // server indicates when disaster animation is finished
+            _client.DisasterFinished += () => BeginInvoke(() =>
+            {
+                Console.WriteLine("[Client] DisasterFinished received");
+                _model.IsDisasterAnimating = false;
+                _model.AnimatedCells.Clear();
+                Invalidate();
+            });
         }
 
         // animate each disaster cell then apply hitsForMe; the model's CurrentDisasterName
         // is already set by the caller and will be cleared at the end.
         private async Task PlayDisasterAnimationAsync(List<Point> cells, List<Point>? hitsForMe)
         {
+            Console.WriteLine($"[Client] PlayDisasterAnimationAsync start count={cells?.Count ?? 0} type={_model.CurrentDisasterName}");
             _disasterCts?.Cancel();
             _disasterCts = new System.Threading.CancellationTokenSource();
             var token = _disasterCts.Token;
@@ -236,6 +278,7 @@ namespace BattleShips.Client
             {
                 foreach (var cell in cells)
                 {
+                    Console.WriteLine($"[Client] Animating cell {cell}");
                     token.ThrowIfCancellationRequested();
                     _model.AnimatedCells.Add(cell);
                     Invalidate();
@@ -245,12 +288,14 @@ namespace BattleShips.Client
                     var wasHit = hitsForMe != null && hitsForMe.Contains(cell);
                     if (wasHit)
                     {
+                        Console.WriteLine($"[Client] Disaster hit at {cell}");
                         // opponent hit your ship (if this were the player's own board)
                         _model.ApplyOpponentMove(cell, true);
                     }
                     else
                     {
-                        // no hit for this client; if the disaster affects the opponent board you'd handle that on other client
+                        Console.WriteLine($"[Client] Disaster miss at {cell} for this client");
+                        // no hit for this client;
                     }
 
                     _model.AnimatedCells.Remove(cell);
@@ -258,24 +303,15 @@ namespace BattleShips.Client
                     await Task.Delay(120, token);
                 }
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException) { Console.WriteLine("[Client] PlayDisasterAnimationAsync cancelled"); }
             finally
             {
+                Console.WriteLine("[Client] PlayDisasterAnimationAsync finished");
                 _model.IsDisasterAnimating = false;
                 _model.CurrentDisasterName = null;
                 _model.AnimatedCells.Clear();
                 Invalidate();
             }
-        }
-
-        private async Task ConnectAsync(string? baseUrl = null)
-        {
-            baseUrl ??= Environment.GetEnvironmentVariable("API_URL") ?? "http://localhost:5000";
-            await _client.ConnectAsync(baseUrl);
-            ResetBoards();
-            _model.State = AppState.Waiting;
-            _startupPanel!.Visible = false;
-            Text = "Connected to BattleShips server";
         }
 
         private void UiTimer_Tick(object? sender, EventArgs e)
@@ -412,25 +448,45 @@ namespace BattleShips.Client
             var hitRight = _renderer.HitTest(mouse, rightRect);
             if (hitRight != null)
             {
+                // prevent moves while disaster animation is running (client-side guard)
+                if (_model.IsDisasterAnimating)
+                {
+                    MessageBox.Show("Cannot make moves while disaster is happening", "Wait", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
                 if (_model.State != AppState.Playing) return;
-                if (!_model.IsMyTurn)
+                if (!_model.IsMyTurn) 
                 {
                     MessageBox.Show("Not your turn", "Wait", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-                if (_model.YourFired.Contains(hitRight.Value)) return;
+                if (_awaitingMove)
+                {
+                    // ignore duplicate clicks while waiting for server
+                    return;
+                }
 
                 if (_client.IsConnected)
                 {
                     try
                     {
+                        Console.WriteLine($"[Client] Sending MakeMove to server: ({hitRight.Value.X},{hitRight.Value.Y})");
+                        // mark that we're waiting for server response and prevent more moves
+                        _awaitingMove = true;
+                        // pessimistically clear local turn so user can't click again
+                        _model.IsMyTurn = false;
+                        _lblStatus!.Text = "Move sent...";
                         await _client.MakeMove(hitRight.Value.X, hitRight.Value.Y);
-                        // optimistic mark (server will confirm)
+                        // optimistic mark (server will also confirm via MoveResult)
                         _model.YourFired.Add(hitRight.Value);
                         Invalidate();
                     }
                     catch (Exception ex)
                     {
+                        Console.WriteLine($"[Client] MakeMove send failed: {ex}");
+                        // allow retry on failure
+                        _awaitingMove = false;
+                        _model.IsMyTurn = true;
                         Console.WriteLine("Send failed: " + ex.Message);
                     }
                 }
