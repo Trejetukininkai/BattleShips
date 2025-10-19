@@ -76,44 +76,114 @@ namespace BattleShips.Client
                 Anchor = AnchorStyles.None
             };
 
+            // Calculate center positions
+            var centerX = ClientSize.Width / 2;
+            var startY = 60;
+
+            // Main title
+            var titleLabel = new Label
+            {
+                Text = "⚓ BATTLESHIPS ⚓",
+                ForeColor = Color.FromArgb(100, 150, 255), // Light blue
+                Font = new Font("Segoe UI", 28, FontStyle.Bold),
+                AutoSize = true,
+                BackColor = Color.Transparent
+            };
+            var titleSize = titleLabel.PreferredSize;
+            titleLabel.Location = new Point(centerX - titleSize.Width / 2, startY);
+
+            // Subtitle
+            var subtitleLabel = new Label
+            {
+                Text = "🌊 Welcome to the ultimate naval warfare experience! 🌊",
+                ForeColor = Color.FromArgb(180, 200, 220),
+                Font = new Font("Segoe UI", 12, FontStyle.Italic),
+                AutoSize = true,
+                BackColor = Color.Transparent
+            };
+            var subtitleSize = subtitleLabel.PreferredSize;
+            subtitleLabel.Location = new Point(centerX - subtitleSize.Width / 2, startY + 50);
+
+            // Buttons setup
+            var buttonWidth = 280;
+            var buttonHeight = 50;
+            var buttonSpacing = 20;
+            var buttonsStartY = startY + 120;
+
+            // Connect to Server button
             _btnConnectLocal = new Button
             {
-                Text = "🚀 Connect to Server",
+                Text = "🚀 Start Game",
                 ForeColor = Color.White,
-                BackColor = Color.FromArgb(0, 120, 215), // Modern blue
+                BackColor = Color.FromArgb(46, 204, 113), // Modern green
                 FlatStyle = FlatStyle.Flat,
-                Size = new Size(220, 45),
-                Location = new Point(50, 30),
-                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                Size = new Size(buttonWidth, buttonHeight),
+                Location = new Point(centerX - buttonWidth / 2, buttonsStartY),
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Cursor = Cursors.Hand
             };
             _btnConnectLocal.FlatAppearance.BorderSize = 0;
-            _btnConnectLocal.FlatAppearance.MouseOverBackColor = Color.FromArgb(0, 100, 180);
+            _btnConnectLocal.FlatAppearance.MouseOverBackColor = Color.FromArgb(39, 174, 96);
 
+            // Settings button
+            var btnSettings = new Button
+            {
+                Text = "⚙️ Settings",
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(52, 73, 94), // Modern gray
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(buttonWidth, buttonHeight),
+                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + buttonHeight + buttonSpacing),
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btnSettings.FlatAppearance.BorderSize = 0;
+            btnSettings.FlatAppearance.MouseOverBackColor = Color.FromArgb(44, 62, 80);
+
+            // Quit button
+            var btnQuit = new Button
+            {
+                Text = "❌ Quit Game",
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(231, 76, 60), // Modern red
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(buttonWidth, buttonHeight),
+                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + 2 * (buttonHeight + buttonSpacing)),
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            btnQuit.FlatAppearance.BorderSize = 0;
+            btnQuit.FlatAppearance.MouseOverBackColor = Color.FromArgb(192, 57, 43);
+
+            // Status and countdown labels (moved down)
             _lblStatus = new Label
             {
-                Text = "⚡ Ready to connect",
+                Text = "⚡ Ready to start your naval adventure",
                 ForeColor = Color.FromArgb(200, 200, 200),
-                Location = new Point(50, 85),
                 AutoSize = true,
                 Visible = true,
-                Font = new Font("Segoe UI", 10)
+                Font = new Font("Segoe UI", 10),
+                BackColor = Color.Transparent
             };
+            var statusSize = _lblStatus.PreferredSize;
+            _lblStatus.Location = new Point(centerX - statusSize.Width / 2, buttonsStartY + 3 * (buttonHeight + buttonSpacing) + 20);
 
             _lblCountdown = new Label
             {
                 Text = "",
                 ForeColor = Color.FromArgb(255, 193, 7), // Modern amber
-                Location = new Point(50, 110),
                 AutoSize = true,
                 Visible = true,
-                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                BackColor = Color.Transparent
             };
+            _lblCountdown.Location = new Point(centerX - 50, buttonsStartY + 3 * (buttonHeight + buttonSpacing) + 45);
 
+            // Event handlers
             _btnConnectLocal.Click += async (_, __) =>
             {
                 _btnConnectLocal.Enabled = false;
-                _lblStatus.Text = "Connecting...";
+                _lblStatus.Text = "🔄 Connecting to server...";
                 try
                 {
                     await _controller.ConnectAsync("http://localhost:5000");
@@ -124,13 +194,34 @@ namespace BattleShips.Client
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Failed to connect: {ex.Message}", "Connect error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    _lblStatus.Text = "Not connected";
+                    MessageBox.Show($"Failed to connect: {ex.Message}", "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    _lblStatus.Text = "❌ Connection failed - Try again";
                     _btnConnectLocal.Enabled = true;
                 }
             };
 
+            btnSettings.Click += (_, __) =>
+            {
+                MessageBox.Show("⚙️ Settings panel coming soon!\n\nFuture features:\n• Sound effects\n• Graphics quality\n• Key bindings\n• Difficulty levels", 
+                    "Settings", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+
+            btnQuit.Click += (_, __) =>
+            {
+                var result = MessageBox.Show("Are you sure you want to quit BattleShips?", 
+                    "Quit Game", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (result == DialogResult.Yes)
+                {
+                    Application.Exit();
+                }
+            };
+
+            // Add all controls to the panel
+            _startupPanel.Controls.Add(titleLabel);
+            _startupPanel.Controls.Add(subtitleLabel);
             _startupPanel.Controls.Add(_btnConnectLocal);
+            _startupPanel.Controls.Add(btnSettings);
+            _startupPanel.Controls.Add(btnQuit);
             _startupPanel.Controls.Add(_lblStatus);
             _startupPanel.Controls.Add(_lblCountdown);
             Controls.Add(_startupPanel);
