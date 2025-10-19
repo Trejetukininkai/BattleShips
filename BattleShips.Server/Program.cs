@@ -474,16 +474,72 @@ public class GameHub : Hub
     {
         Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disaster.TypeName})");
 
+        // Register disaster hits in the game state
+        if (g.PlayerA != null && disaster.HitsForA.Count > 0)
+        {
+            g.RegisterDisasterHits(g.PlayerA, disaster.HitsForA);
+        }
+        if (g.PlayerB != null && disaster.HitsForB.Count > 0)
+        {
+            g.RegisterDisasterHits(g.PlayerB, disaster.HitsForB);
+        }
+
+        // Check for game over after disaster
+        bool playerALost = g.PlayerA != null && g.GetRemainingShips(g.PlayerA) == 0;
+        bool playerBLost = g.PlayerB != null && g.GetRemainingShips(g.PlayerB) == 0;
+
+        // Send disaster notifications
         if (g.PlayerA != null)
             await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForA, disaster.TypeName);
         if (g.PlayerB != null)
             await Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForB, disaster.TypeName);
 
-        // Remaining ships after disaster
+        // Send updated remaining ship counts
         if (g.PlayerA != null)
-            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.ShipsA.Count);
+            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerA));
         if (g.PlayerB != null)
-            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.ShipsB.Count);
+            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerB));
+
+        // Send disaster hit notifications so players can see hits on their opponent's board
+        // Player A should see hits that occurred on Player B's board (HitsForB) - these show on opponent board (right side)
+        if (g.PlayerA != null && disaster.HitsForB.Count > 0)
+        {
+            foreach (var hit in disaster.HitsForB)
+            {
+                await Clients.Client(g.PlayerA).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
+            }
+        }
+        // Player B should see hits that occurred on Player A's board (HitsForA) - these show on opponent board (right side)
+        if (g.PlayerB != null && disaster.HitsForA.Count > 0)
+        {
+            foreach (var hit in disaster.HitsForA)
+            {
+                await Clients.Client(g.PlayerB).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
+            }
+        }
+
+        // Handle game over from disaster
+        if (playerALost && !playerBLost)
+        {
+            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "You lose.");
+            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "You win!");
+            CleanupGame(gid, g);
+            return;
+        }
+        else if (playerBLost && !playerALost)
+        {
+            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "You win!");
+            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "You lose.");
+            CleanupGame(gid, g);
+            return;
+        }
+        else if (playerALost && playerBLost)
+        {
+            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "Draw - both players eliminated!");
+            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "Draw - both players eliminated!");
+            CleanupGame(gid, g);
+            return;
+        }
 
         // Schedule animation cleanup (non-blocking)
         try

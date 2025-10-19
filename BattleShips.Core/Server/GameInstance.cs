@@ -10,6 +10,8 @@ namespace BattleShips.Core
         public string? PlayerB { get; set; }
         public List<Ship> ShipsA { get; set; } = new();
         public List<Ship> ShipsB { get; set; } = new();
+        public HashSet<Point> HitCellsA { get; set; } = new(); // Cells hit on Player A's board
+        public HashSet<Point> HitCellsB { get; set; } = new(); // Cells hit on Player B's board
         public bool ReadyA { get; set; } // when true, player A has placed ships
         public bool ReadyB { get; set; } // when true, player B has placed ships
         public bool Started { get; set; }
@@ -105,17 +107,22 @@ namespace BattleShips.Core
 
         public int GetRemainingShips(string connId)
         {
-            if (PlayerA == connId) return ShipsA.Count(s => !s.IsPlaced || HasShipHit(s, ShipsA));
-            if (PlayerB == connId) return ShipsB.Count(s => !s.IsPlaced || HasShipHit(s, ShipsB));
-            return 0;
-        }
-        
-        private bool HasShipHit(Ship ship, List<Ship> ships)
-        {
-            // Check if any part of the ship has been hit
-            var shipCells = ship.GetOccupiedCells();
-            // This would need to track hit cells separately - simplified for now
-            return true; // Assume ship is alive if it exists
+            var ships = PlayerA == connId ? ShipsA : ShipsB;
+            var hitCells = PlayerA == connId ? HitCellsA : HitCellsB;
+            
+            int remainingShips = 0;
+            foreach (var ship in ships.Where(s => s.IsPlaced))
+            {
+                var shipCells = ship.GetOccupiedCells();
+                var isShipDestroyed = shipCells.All(cell => hitCells.Contains(cell));
+                
+                if (!isShipDestroyed)
+                {
+                    remainingShips++;
+                }
+            }
+            
+            return remainingShips;
         }
 
         // Register shot on opponent; returns hit, and out opponentLost
@@ -123,6 +130,7 @@ namespace BattleShips.Core
         {
             var hit = false;
             var ships = PlayerA == opponentConnId ? ShipsA : ShipsB;
+            var hitCells = PlayerA == opponentConnId ? HitCellsA : HitCellsB;
             
             // Check if shot hits any ship
             foreach (var ship in ships.Where(s => s.IsPlaced))
@@ -134,11 +142,44 @@ namespace BattleShips.Core
                 }
             }
             
-            // For now, assume opponent lost if all ships are destroyed
-            // In a real implementation, you'd track which cells have been hit
-            opponentLost = ships.Count == 0;
+            // Record the hit
+            if (hit)
+            {
+                hitCells.Add(shot);
+            }
+            
+            // Check if opponent lost (all ships destroyed)
+            opponentLost = AreAllShipsDestroyed(ships, hitCells);
             
             return hit;
+        }
+
+        // Register disaster hits on a player's board
+        public void RegisterDisasterHits(string playerConnId, List<Point> hitPoints)
+        {
+            var hitCells = PlayerA == playerConnId ? HitCellsA : HitCellsB;
+            
+            foreach (var point in hitPoints)
+            {
+                hitCells.Add(point);
+            }
+        }
+
+        // Check if all ships are destroyed
+        private bool AreAllShipsDestroyed(List<Ship> ships, HashSet<Point> hitCells)
+        {
+            foreach (var ship in ships.Where(s => s.IsPlaced))
+            {
+                var shipCells = ship.GetOccupiedCells();
+                var shipHit = shipCells.All(cell => hitCells.Contains(cell));
+                
+                if (!shipHit) // If any ship is not fully destroyed, game continues
+                {
+                    return false;
+                }
+            }
+            
+            return true; // All ships are destroyed
         }
 
         public void SwitchTurn()

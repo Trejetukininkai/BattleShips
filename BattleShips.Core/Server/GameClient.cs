@@ -20,6 +20,7 @@ namespace BattleShips.Core
         public event Action? OpponentTurn;
         public event Action<int,int,bool,int>? MoveResult;
         public event Action<int,int,bool>? OpponentMoved;
+        public event Action<int,int>? OpponentHitByDisaster;
         public event Action<string>? MaxPlayersReached;
         public event Action<string>? OpponentDisconnected;
         public event Action<string>? GameOver;
@@ -56,6 +57,7 @@ namespace BattleShips.Core
             _conn.On("OpponentTurn", () => { Console.WriteLine("[GameClient] OpponentTurn"); OpponentTurn?.Invoke(); });
             _conn.On<int,int,bool,int>("MoveResult", (c, r, h, rem) => { Console.WriteLine($"[GameClient] MoveResult ({c},{r}) hit={h} rem={rem}"); MoveResult?.Invoke(c, r, h, rem); });
             _conn.On<int,int,bool>("OpponentMoved", (c, r, h) => { Console.WriteLine($"[GameClient] OpponentMoved ({c},{r}) hit={h}"); OpponentMoved?.Invoke(c, r, h); });
+            _conn.On<int,int>("OpponentHitByDisaster", (c, r) => { Console.WriteLine($"[GameClient] OpponentHitByDisaster ({c},{r})"); OpponentHitByDisaster?.Invoke(c, r); });
             _conn.On<string>("MaxPlayersReached", m => { Console.WriteLine($"[GameClient] MaxPlayersReached: {m}"); MaxPlayersReached?.Invoke(m); });
             _conn.On<string>("OpponentDisconnected", m => { Console.WriteLine($"[GameClient] OpponentDisconnected: {m}"); OpponentDisconnected?.Invoke(m); });
             _conn.On<string>("GameOver", m => { Console.WriteLine($"[GameClient] GameOver: {m}"); GameOver?.Invoke(m); });

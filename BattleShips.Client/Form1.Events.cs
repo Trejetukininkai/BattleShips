@@ -95,6 +95,13 @@ namespace BattleShips.Client
                 Invalidate();
             });
 
+            _controller.OpponentHitByDisaster += (col, row) => BeginInvoke(() =>
+            {
+                var p = new Point(col, row);
+                _model.ApplyOpponentHitByDisaster(p);
+                Invalidate();
+            });
+
             _controller.MaxPlayersReached += msg => BeginInvoke(() =>
             {
                 MessageBox.Show(msg ?? "Server full", "Server", MessageBoxButtons.OK, MessageBoxIcon.Information);

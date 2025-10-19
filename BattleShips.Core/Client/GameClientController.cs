@@ -24,6 +24,7 @@ namespace BattleShips.Core.Client
         public event Action? OpponentTurn;
         public event Action<int, int, bool, int>? MoveResult;
         public event Action<int, int, bool>? OpponentMoved;
+        public event Action<int, int>? OpponentHitByDisaster;
         public event Action<string?>? MaxPlayersReached;
         public event Action<string?>? OpponentDisconnected;
         public event Action<string?>? GameOver;
@@ -62,6 +63,7 @@ namespace BattleShips.Core.Client
             _client.OpponentTurn += () => OpponentTurn?.Invoke();
             _client.MoveResult += (c, r, h, rem) => MoveResult?.Invoke(c, r, h, rem);
             _client.OpponentMoved += (c, r, h) => OpponentMoved?.Invoke(c, r, h);
+            _client.OpponentHitByDisaster += (c, r) => OpponentHitByDisaster?.Invoke(c, r);
             _client.MaxPlayersReached += msg => MaxPlayersReached?.Invoke(msg);
             _client.OpponentDisconnected += msg => OpponentDisconnected?.Invoke(msg);
             _client.GameOver += msg => GameOver?.Invoke(msg);

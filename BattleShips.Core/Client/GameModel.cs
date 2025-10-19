@@ -103,5 +103,13 @@ namespace BattleShips.Core
                 // The server will handle ship destruction logic
             }
         }
+
+        public void ApplyOpponentHitByDisaster(Point p)
+        {
+            // This represents a hit on the opponent's board that you can see (disaster hit)
+            // Add it to YourFiredHits so it shows up on the opponent board (right side)
+            YourFired.Add(p);
+            YourFiredHits.Add(p);
+        }
     }
 }
