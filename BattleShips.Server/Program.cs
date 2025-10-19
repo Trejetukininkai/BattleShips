@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using BattleShips.Core;
+using BattleShips.Core.Server;
 using System;
 using System.IO;
 using System.Collections.Concurrent;
@@ -58,9 +59,8 @@ public class GameHub : Hub
         _hubContext = hubContext;
     }
 
-    // simple global tracking to allow only two players per game and a global waiting slot
-    private static readonly ConcurrentDictionary<string, GameInstance> Games = new();
-    private static readonly ConcurrentDictionary<string, string> PlayerGame = new(); // connectionId -> gameId
+    // Use GameManager singleton for all game state management
+    private readonly GameManager _gameManager = GameManager.Instance;
     private static readonly object _lock = new();
 
     // Maximum players per game = 2
@@ -68,36 +68,9 @@ public class GameHub : Hub
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] OnConnectedAsync: conn={connId}");
-        GameInstance? assigned = null;
-        lock (_lock)
-        {
-            // try to find an existing waiting game (has one player and not started)
-            assigned = Games.Values.FirstOrDefault(g => !g.HasSecondPlayer && !g.Started);
-            if (assigned == null)
-            {
-                // create new game
-                var id = Guid.NewGuid().ToString("N");
-                assigned = new GameInstance(id)
-                {
-                    // initialize game mode so disaster countdown / generator exists
-                    GameMode = new GameMode(shipCount: 10, boardX: Board.Size, boardY: Board.Size)
-                };
-                Console.WriteLine($"[Server] Created new GameInstance id={id} with GameMode");
-                Games[id] = assigned;
-            }
-            else
-            {
-                Console.WriteLine($"[Server] Reusing game id={assigned.Id} for new connection");
-            }
-
-            // add player
-            if (!assigned.HasFirstPlayer)
-                assigned.PlayerA = connId;
-            else if (!assigned.HasSecondPlayer)
-                assigned.PlayerB = connId;
-
-            PlayerGame[connId] = assigned.Id;
-        }
+        
+        // Use GameManager to assign player to game
+        var assigned = _gameManager.AssignPlayerToGame(connId);
 
         Console.WriteLine($"Client connected: {connId} -> game {assigned.Id} (players={assigned.PlayerCount})");
 
@@ -130,7 +103,8 @@ public class GameHub : Hub
                     // timeout expired - set cancellation flag (will be handled in hub methods)
                     lock (_lock)
                     {
-                        if (Games.TryGetValue(gameId, out var game) && !game.Started)
+                        var game = _gameManager.GetGame(gameId);
+                        if (game != null && !game.Started)
                         {
                             Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
                             game.Started = true; // mark timeout expired
@@ -151,27 +125,17 @@ public class GameHub : Hub
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var connId = Context.ConnectionId;
-        if (PlayerGame.TryRemove(connId, out var gid))
+        
+        // Use GameManager to handle player removal
+        var (game, gameId) = _gameManager.RemovePlayer(connId);
+        
+        if (game != null && gameId != null)
         {
-            if (Games.TryGetValue(gid, out var g))
+            // Notify opponent
+            var other = game.Other(connId);
+            if (other != null)
             {
-                // notify opponent
-                var other = g.Other(connId);
-                if (other != null)
-                {
-                    await Clients.Client(other).SendAsync("OpponentDisconnected", "Opponent disconnected.");
-                }
-
-                // remove game if no players left
-                if (!g.HasFirstPlayer && !g.HasSecondPlayer)
-                {
-                    Games.TryRemove(gid, out _);
-                }
-                else
-                {
-                    // clear slot
-                    g.RemovePlayer(connId);
-                }
+                await Clients.Client(other).SendAsync("OpponentDisconnected", "Opponent disconnected.");
             }
         }
 
@@ -179,40 +143,37 @@ public class GameHub : Hub
         await base.OnDisconnectedAsync(exception);
     }
 
-    // Client -> server: place ships (list of points), ships are 1x1 cells; expect 10 positions
-    public async Task PlaceShips(List<Point> ships)
+    // Client -> server: place ships (list of points), ships are now multi-cell rectangles
+    public async Task PlaceShips(List<Point> shipCells)
     {
         var connId = Context.ConnectionId;
-        Console.WriteLine($"[Server] PlaceShips called by {connId} with {ships?.Count ?? 0} positions");
-        if (!PlayerGame.TryGetValue(connId, out var gid) || !Games.TryGetValue(gid, out var g))
+        Console.WriteLine($"[Server] PlaceShips called by {connId} with {shipCells?.Count ?? 0} positions");
+        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
         {
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
 
         // Check if game should be cancelled due to timeout
-        if (g.ShouldCancelOnNextAction)
+        if (g!.ShouldCancelOnNextAction)
         {
             Console.WriteLine($"[Server] Game {gid} timeout exceeded - cancelling on PlaceShips");
-            await CancelGame(g, gid, "Placement timeout exceeded");
+            await CancelGame(g, gid!, "Placement timeout exceeded");
             return;
         }
 
         // Validate ship placements
-        var validationError = ValidateShipPlacement(ships);
+        var validationError = ValidateShipPlacement(shipCells);
         if (validationError != null)
         {
             Console.WriteLine($"[Server] Ship placement validation failed for {connId}: {validationError}");
-            await CancelGame(g, gid, validationError);
+            await CancelGame(g, gid!, validationError);
             return;
         }
 
-        // accept up to 10 unique valid positions
-        var unique = ships?.Distinct().Take(10).ToList() ?? new List<Point>();
-        if (unique.Count > 10) unique = unique.Take(10).ToList();
-
-        g.SetPlayerShips(connId, new HashSet<Point>(unique));
-        await Clients.Caller.SendAsync("PlacementAck", unique.Count);
+        // Accept ship placement
+        g.SetPlayerShips(connId, shipCells ?? new List<Point>());
+        await Clients.Caller.SendAsync("PlacementAck", shipCells?.Count ?? 0);
 
         // if both ready start immediately
         if (g.ReadyA && g.ReadyB && !g.Started)
@@ -222,25 +183,26 @@ public class GameHub : Hub
         }
     }
 
-    private string? ValidateShipPlacement(List<Point>? ships)
+    private string? ValidateShipPlacement(List<Point>? shipCells)
     {
-        if (ships == null || ships.Count == 0)
+        if (shipCells == null || shipCells.Count == 0)
             return null; // Allow empty placements (game will start with 0 ships)
 
         // Check for duplicate positions
-        if (ships.Count != ships.Distinct().Count())
+        if (shipCells.Count != shipCells.Distinct().Count())
             return "Ship placement contains duplicate positions";
 
-        // Check if ships are within board bounds
-        foreach (var ship in ships)
+        // Check if ship cells are within board bounds
+        foreach (var cell in shipCells)
         {
-            if (ship.X < 0 || ship.X >= Board.Size || ship.Y < 0 || ship.Y >= Board.Size)
-                return $"Ship at ({ship.X}, {ship.Y}) is outside board bounds (0-{Board.Size - 1})";
+            if (cell.X < 0 || cell.X >= Board.Size || cell.Y < 0 || cell.Y >= Board.Size)
+                return $"Ship cell at ({cell.X}, {cell.Y}) is outside board bounds (0-{Board.Size - 1})";
         }
 
-        // Check if more than 10 ships
-        if (ships.Count > 10)
-            return "Cannot place more than 10 ships";
+        // Check if total ship cells matches expected fleet (5+4+3+3+2 = 17 cells)
+        var expectedCells = FleetConfiguration.StandardFleet.Sum();
+        if (shipCells.Count != expectedCells)
+            return $"Expected {expectedCells} ship cells, got {shipCells.Count}";
 
         return null; // Valid placement
     }
@@ -307,22 +269,15 @@ public class GameHub : Hub
 
         lock (_lock)
         {
-            result = HandleMoveUnderLock(g, gid, connId, col, row);
+            result = HandleMoveUnderLock(g!, gid!, connId, col, row);
         }
 
-        await ProcessMoveResults(g, gid, connId, result);
+        await ProcessMoveResults(g!, gid!, connId, result);
     }
 
-    private bool TryGetGame(string connId, out GameInstance? game, out string gid)
+    private bool TryGetGame(string connId, out GameInstance? game, out string? gid)
     {
-        game = null!;
-        gid = null!;
-        if (!PlayerGame.TryGetValue(connId, out gid!) || !Games.TryGetValue(gid, out game))
-        {
-            Console.WriteLine($"[Server] MakeMove: game not found for conn {connId}");
-            return false;
-        }
-        return true;
+        return _gameManager.ValidatePlayerInGame(connId, out game, out gid);
     }
     private async Task SendError(string connId, string message)
     {
@@ -387,8 +342,25 @@ public class GameHub : Hub
 
         foreach (var p in affected)
         {
-            if (g.ShipsA.Remove(p)) hitsForA.Add(p);
-            if (g.ShipsB.Remove(p)) hitsForB.Add(p);
+            // Check if disaster hits any ship cells for player A
+            foreach (var ship in g.ShipsA.ToList())
+            {
+                if (ship.GetOccupiedCells().Contains(p))
+                {
+                    hitsForA.Add(p);
+                    break;
+                }
+            }
+            
+            // Check if disaster hits any ship cells for player B
+            foreach (var ship in g.ShipsB.ToList())
+            {
+                if (ship.GetOccupiedCells().Contains(p))
+                {
+                    hitsForB.Add(p);
+                    break;
+                }
+            }
         }
 
         g.EventInProgress = true;
@@ -439,16 +411,13 @@ public class GameHub : Hub
 
     private void CleanupGame(string gid, GameInstance g)
     {
-        Games.TryRemove(gid, out _);
-        if (g.PlayerA != null) PlayerGame.TryRemove(g.PlayerA, out _);
-        if (g.PlayerB != null) PlayerGame.TryRemove(g.PlayerB, out _);
-        Console.WriteLine($"[Server] Cleaned up game {gid}");
+        _gameManager.RemoveGame(gid, g);
     }
 
     private async Task BroadcastTurnUpdates(string gid, GameInstance g)
     {
-        if (!Games.TryGetValue(gid, out var freshGame)) return;
-        if (freshGame.CurrentTurn == null) return;
+        var freshGame = _gameManager.GetGame(gid);
+        if (freshGame?.CurrentTurn == null) return;
 
         await Clients.Client(freshGame.CurrentTurn).SendAsync("YourTurn");
         var other = freshGame.Other(freshGame.CurrentTurn);
@@ -459,16 +428,72 @@ public class GameHub : Hub
     {
         Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disaster.TypeName})");
 
+        // Register disaster hits in the game state
+        if (g.PlayerA != null && disaster.HitsForA.Count > 0)
+        {
+            g.RegisterDisasterHits(g.PlayerA, disaster.HitsForA);
+        }
+        if (g.PlayerB != null && disaster.HitsForB.Count > 0)
+        {
+            g.RegisterDisasterHits(g.PlayerB, disaster.HitsForB);
+        }
+
+        // Check for game over after disaster
+        bool playerALost = g.PlayerA != null && g.GetRemainingShips(g.PlayerA) == 0;
+        bool playerBLost = g.PlayerB != null && g.GetRemainingShips(g.PlayerB) == 0;
+
+        // Send disaster notifications
         if (g.PlayerA != null)
             await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForA, disaster.TypeName);
         if (g.PlayerB != null)
             await Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForB, disaster.TypeName);
 
-        // Remaining ships after disaster
+        // Send updated remaining ship counts
         if (g.PlayerA != null)
-            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.ShipsA.Count);
+            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerA));
         if (g.PlayerB != null)
-            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.ShipsB.Count);
+            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerB));
+
+        // Send disaster hit notifications so players can see hits on their opponent's board
+        // Player A should see hits that occurred on Player B's board (HitsForB) - these show on opponent board (right side)
+        if (g.PlayerA != null && disaster.HitsForB.Count > 0)
+        {
+            foreach (var hit in disaster.HitsForB)
+            {
+                await Clients.Client(g.PlayerA).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
+            }
+        }
+        // Player B should see hits that occurred on Player A's board (HitsForA) - these show on opponent board (right side)
+        if (g.PlayerB != null && disaster.HitsForA.Count > 0)
+        {
+            foreach (var hit in disaster.HitsForA)
+            {
+                await Clients.Client(g.PlayerB).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
+            }
+        }
+
+        // Handle game over from disaster
+        if (playerALost && !playerBLost)
+        {
+            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "You lose.");
+            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "You win!");
+            CleanupGame(gid, g);
+            return;
+        }
+        else if (playerBLost && !playerALost)
+        {
+            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "You win!");
+            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "You lose.");
+            CleanupGame(gid, g);
+            return;
+        }
+        else if (playerALost && playerBLost)
+        {
+            if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "Draw - both players eliminated!");
+            if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "Draw - both players eliminated!");
+            CleanupGame(gid, g);
+            return;
+        }
 
         // Schedule animation cleanup (non-blocking)
         try
@@ -555,12 +580,9 @@ public class GameHub : Hub
 
             Console.WriteLine($"[Server] Game {game.Id} cancelled: {reason}");
             
-            // Find the game ID for this instance
-            var gid = Games.FirstOrDefault(x => x.Value == game).Key;
-            if (gid != null)
-            {
-                await CancelGame(game, gid, reason);
-            }
+            // Use the game's ID directly
+            var gid = game.Id;
+            await CancelGame(game, gid, reason);
             
             return false; // Game cancelled
         }

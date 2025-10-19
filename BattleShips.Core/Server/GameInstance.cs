@@ -8,8 +8,10 @@ namespace BattleShips.Core
         public string Id { get; }
         public string? PlayerA { get; set; }
         public string? PlayerB { get; set; }
-        public HashSet<Point> ShipsA { get; set; } = new();
-        public HashSet<Point> ShipsB { get; set; } = new();
+        public List<Ship> ShipsA { get; set; } = new();
+        public List<Ship> ShipsB { get; set; } = new();
+        public HashSet<Point> HitCellsA { get; set; } = new(); // Cells hit on Player A's board
+        public HashSet<Point> HitCellsB { get; set; } = new(); // Cells hit on Player B's board
         public bool ReadyA { get; set; } // when true, player A has placed ships
         public bool ReadyB { get; set; } // when true, player B has placed ships
         public bool Started { get; set; }
@@ -42,34 +44,142 @@ namespace BattleShips.Core
             return null;
         }
 
-        public void SetPlayerShips(string connId, HashSet<Point> ships)
+        public void SetPlayerShips(string connId, List<Point> shipCells)
         {
+            // Convert ship cells back to Ship objects
+            var ships = new List<Ship>();
+            var placedCells = new HashSet<Point>(shipCells);
+            
+            // Create ships from the placed cells (simplified - assumes ships are placed correctly)
+            foreach (var cell in shipCells)
+            {
+                if (placedCells.Contains(cell))
+                {
+                    // Find ship length by counting consecutive cells
+                    var length = 1;
+                    
+                    // Check horizontal
+                    for (int i = 1; i < 6; i++)
+                    {
+                        if (placedCells.Contains(new Point(cell.X + i, cell.Y)))
+                            length++;
+                        else break;
+                    }
+                    
+                    // If horizontal length is 1, check vertical
+                    if (length == 1)
+                    {
+                        for (int i = 1; i < 6; i++)
+                        {
+                            if (placedCells.Contains(new Point(cell.X, cell.Y + i)))
+                                length++;
+                            else break;
+                        }
+                    }
+                    
+                    // Create ship
+                    var ship = new Ship(length, ships.Count)
+                    {
+                        Position = cell,
+                        IsPlaced = true
+                    };
+                    
+                    // Set orientation
+                    if (length > 1)
+                    {
+                        ship.Orientation = placedCells.Contains(new Point(cell.X + 1, cell.Y)) 
+                            ? ShipOrientation.Horizontal 
+                            : ShipOrientation.Vertical;
+                    }
+                    
+                    ships.Add(ship);
+                    
+                    // Remove this ship's cells from consideration
+                    var occupiedCells = ship.GetOccupiedCells();
+                    foreach (var shipCell in occupiedCells)
+                        placedCells.Remove(shipCell);
+                }
+            }
+            
             if (PlayerA == connId) { ShipsA = ships; ReadyA = true; }
             else if (PlayerB == connId) { ShipsB = ships; ReadyB = true; }
         }
 
         public int GetRemainingShips(string connId)
         {
-            if (PlayerA == connId) return ShipsA.Count;
-            if (PlayerB == connId) return ShipsB.Count;
-            return 0;
+            var ships = PlayerA == connId ? ShipsA : ShipsB;
+            var hitCells = PlayerA == connId ? HitCellsA : HitCellsB;
+            
+            int remainingShips = 0;
+            foreach (var ship in ships.Where(s => s.IsPlaced))
+            {
+                var shipCells = ship.GetOccupiedCells();
+                var isShipDestroyed = shipCells.All(cell => hitCells.Contains(cell));
+                
+                if (!isShipDestroyed)
+                {
+                    remainingShips++;
+                }
+            }
+            
+            return remainingShips;
         }
 
         // Register shot on opponent; returns hit, and out opponentLost
         public bool RegisterShot(string opponentConnId, Point shot, out bool opponentLost)
         {
             var hit = false;
-            if (PlayerA == opponentConnId)
+            var ships = PlayerA == opponentConnId ? ShipsA : ShipsB;
+            var hitCells = PlayerA == opponentConnId ? HitCellsA : HitCellsB;
+            
+            // Check if shot hits any ship
+            foreach (var ship in ships.Where(s => s.IsPlaced))
             {
-                if (ShipsA.Remove(shot)) hit = true;
-                opponentLost = ShipsA.Count == 0;
+                if (ship.GetOccupiedCells().Contains(shot))
+                {
+                    hit = true;
+                    break;
+                }
             }
-            else
+            
+            // Record the hit
+            if (hit)
             {
-                if (ShipsB.Remove(shot)) hit = true;
-                opponentLost = ShipsB.Count == 0;
+                hitCells.Add(shot);
             }
+            
+            // Check if opponent lost (all ships destroyed)
+            opponentLost = AreAllShipsDestroyed(ships, hitCells);
+            
             return hit;
+        }
+
+        // Register disaster hits on a player's board
+        public void RegisterDisasterHits(string playerConnId, List<Point> hitPoints)
+        {
+            var hitCells = PlayerA == playerConnId ? HitCellsA : HitCellsB;
+            
+            foreach (var point in hitPoints)
+            {
+                hitCells.Add(point);
+            }
+        }
+
+        // Check if all ships are destroyed
+        private bool AreAllShipsDestroyed(List<Ship> ships, HashSet<Point> hitCells)
+        {
+            foreach (var ship in ships.Where(s => s.IsPlaced))
+            {
+                var shipCells = ship.GetOccupiedCells();
+                var shipHit = shipCells.All(cell => hitCells.Contains(cell));
+                
+                if (!shipHit) // If any ship is not fully destroyed, game continues
+                {
+                    return false;
+                }
+            }
+            
+            return true; // All ships are destroyed
         }
 
         public void SwitchTurn()

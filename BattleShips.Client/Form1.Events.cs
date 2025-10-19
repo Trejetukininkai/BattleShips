@@ -34,7 +34,9 @@ namespace BattleShips.Client
             {
                 _model.State = AppState.Placement;
                 _model.PlacementSecondsLeft = secs;
-                _lblStatus!.Text = $"Placement: place 10 ships ({_model.YourShips.Count}/10)";
+                var placedCount = _model.YourShips.Count(s => s.IsPlaced);
+                var totalCount = _model.YourShips.Count;
+                _lblStatus!.Text = $"Placement: drag ships from palette below ({placedCount}/{totalCount})";
                 UpdateCountdownLabel();
                 _uiTimer!.Start();
                 Invalidate();
@@ -90,6 +92,13 @@ namespace BattleShips.Client
                 var p = new Point(col, row);
                 _model.ApplyOpponentMove(p, hit);
                 _lblStatus!.Text = hit ? "Opponent hit your ship!" : "Opponent missed.";
+                Invalidate();
+            });
+
+            _controller.OpponentHitByDisaster += (col, row) => BeginInvoke(() =>
+            {
+                var p = new Point(col, row);
+                _model.ApplyOpponentHitByDisaster(p);
                 Invalidate();
             });
 
