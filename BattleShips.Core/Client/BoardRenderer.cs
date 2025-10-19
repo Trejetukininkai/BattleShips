@@ -35,11 +35,11 @@ namespace BattleShips.Core
             var w = Board.Size * Cell;
             var h = Board.Size * Cell;
 
-            // brushes/pens (use brushes instead of Pen for cross-platform compatibility)
-            using var labelBrush = new SolidBrush(Color.White);
-            using var thinBrush = new SolidBrush(Color.Gray);
-            using var thickBrush = new SolidBrush(Color.White);
-            using var baseBrush = new SolidBrush(Color.FromArgb(30, 70, 120));
+            // Modern color scheme
+            using var labelBrush = new SolidBrush(Color.FromArgb(200, 220, 240));
+            using var thinBrush = new SolidBrush(Color.FromArgb(60, 80, 100));
+            using var thickBrush = new SolidBrush(Color.FromArgb(100, 150, 200));
+            using var baseBrush = new SolidBrush(Color.FromArgb(25, 35, 50));
 
             var left = GetLeftBoardRect();
             var right = GetRightBoardRect();
@@ -100,9 +100,9 @@ namespace BattleShips.Core
             g.DrawString(leftTitle, titleFont, labelBrush, leftTitleX, titleY);
             g.DrawString(rightTitle, titleFont, labelBrush, rightTitleX, titleY);
 
-            // draw your ships on left
-            using (var shipBrush = new SolidBrush(Color.FromArgb(180, 144, 238, 144))) // Light green with transparency
-            using (var shipBorderBrush = new SolidBrush(Color.FromArgb(120, 34, 139, 34))) // Dark green for borders
+            // draw your ships on left - modern green theme
+            using (var shipBrush = new SolidBrush(Color.FromArgb(180, 46, 204, 113))) // Modern emerald green
+            using (var shipBorderBrush = new SolidBrush(Color.FromArgb(200, 39, 174, 96))) // Darker emerald border
             {
                 foreach (var ship in model.YourShips.Where(s => s.IsPlaced))
                 {
@@ -156,7 +156,7 @@ namespace BattleShips.Core
                 }
             }
 
-            // opponent shots on your board
+            // opponent shots on your board - modern styling
             foreach (var p in model.YourHitsByOpponent)
             {
                 var x = left.X + p.X * Cell;
@@ -164,16 +164,64 @@ namespace BattleShips.Core
                 
                 // Check if this hit was on a ship
                 var wasShip = model.YourShips.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(p));
-                g.FillEllipse(wasShip ? Brushes.Red : Brushes.Gray, x + 10, y + 10, Cell - 20, Cell - 20);
+                
+                if (wasShip)
+                {
+                    // Modern hit marker - red with glow effect
+                    using (var hitBrush = new SolidBrush(Color.FromArgb(220, 231, 76, 60)))
+                    {
+                        g.FillEllipse(hitBrush, x + 8, y + 8, Cell - 16, Cell - 16);
+                    }
+                    using (var hitBorder = new Pen(Color.FromArgb(255, 192, 57, 43), 2))
+                    {
+                        g.DrawEllipse(hitBorder, x + 8, y + 8, Cell - 16, Cell - 16);
+                    }
+                }
+                else
+                {
+                    // Modern miss marker - blue-gray
+                    using (var missBrush = new SolidBrush(Color.FromArgb(150, 108, 122, 137)))
+                    {
+                        g.FillEllipse(missBrush, x + 12, y + 12, Cell - 24, Cell - 24);
+                    }
+                    using (var missBorder = new Pen(Color.FromArgb(200, 90, 100, 110), 1))
+                    {
+                        g.DrawEllipse(missBorder, x + 12, y + 12, Cell - 24, Cell - 24);
+                    }
+                }
             }
 
-            // your fired shots on opponent board
+            // your fired shots on opponent board - modern styling
             foreach (var p in model.YourFired)
             {
                 var x = right.X + p.X * Cell;
                 var y = right.Y + p.Y * Cell;
                 var isHit = model.YourFiredHits.Contains(p);
-                g.FillEllipse(isHit ? Brushes.Red : Brushes.Gray, x + 10, y + 10, Cell - 20, Cell - 20);
+                
+                if (isHit)
+                {
+                    // Modern hit marker - orange-red
+                    using (var hitBrush = new SolidBrush(Color.FromArgb(220, 230, 126, 34)))
+                    {
+                        g.FillEllipse(hitBrush, x + 8, y + 8, Cell - 16, Cell - 16);
+                    }
+                    using (var hitBorder = new Pen(Color.FromArgb(255, 211, 84, 0), 2))
+                    {
+                        g.DrawEllipse(hitBorder, x + 8, y + 8, Cell - 16, Cell - 16);
+                    }
+                }
+                else
+                {
+                    // Modern miss marker - subtle gray
+                    using (var missBrush = new SolidBrush(Color.FromArgb(120, 149, 165, 166)))
+                    {
+                        g.FillEllipse(missBrush, x + 12, y + 12, Cell - 24, Cell - 24);
+                    }
+                    using (var missBorder = new Pen(Color.FromArgb(180, 127, 140, 141), 1))
+                    {
+                        g.DrawEllipse(missBorder, x + 12, y + 12, Cell - 24, Cell - 24);
+                    }
+                }
             }
 
             // animated impact overlay (draw on top of boards) - semi-transparent yellow ring

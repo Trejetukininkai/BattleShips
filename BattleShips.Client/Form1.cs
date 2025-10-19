@@ -29,10 +29,14 @@ namespace BattleShips.Client
         {
             InitializeComponent();
             DoubleBuffered = true;
+            
+            // Modern dark theme
+            BackColor = Color.FromArgb(15, 20, 30);
+            ForeColor = Color.White;
 
             var totalWidth = 2 * _renderer.Margin + Board.Size * _renderer.Cell * 2;
             var boardHeight = Board.Size * _renderer.Cell;
-            var totalHeight = 2 * _renderer.Margin + boardHeight + 120; // Extra space for palette below
+            var totalHeight = 2 * _renderer.Margin + boardHeight + 150; // Extra space for palette below (increased from 120 to 150)
             MinimumSize = new Size(totalWidth, totalHeight);
 
             var rawClient = new GameClient();
@@ -67,35 +71,43 @@ namespace BattleShips.Client
         {
             _startupPanel = new Panel
             {
-                BackColor = Color.FromArgb(30, 34, 44),
+                BackColor = Color.FromArgb(20, 25, 35),
                 Size = new Size(ClientSize.Width, ClientSize.Height),
                 Anchor = AnchorStyles.None
             };
 
             _btnConnectLocal = new Button
             {
-                Text = "Connect to localhost",
+                Text = "🚀 Connect to Server",
                 ForeColor = Color.White,
-                Size = new Size(200, 32),
-                Location = new Point(50, 30)
+                BackColor = Color.FromArgb(0, 120, 215), // Modern blue
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(220, 45),
+                Location = new Point(50, 30),
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                Cursor = Cursors.Hand
             };
+            _btnConnectLocal.FlatAppearance.BorderSize = 0;
+            _btnConnectLocal.FlatAppearance.MouseOverBackColor = Color.FromArgb(0, 100, 180);
 
             _lblStatus = new Label
             {
-                Text = "Not connected",
-                ForeColor = Color.White,
-                Location = new Point(50, 72),
+                Text = "⚡ Ready to connect",
+                ForeColor = Color.FromArgb(200, 200, 200),
+                Location = new Point(50, 85),
                 AutoSize = true,
-                Visible = true
+                Visible = true,
+                Font = new Font("Segoe UI", 10)
             };
 
             _lblCountdown = new Label
             {
                 Text = "",
-                ForeColor = Color.Yellow,
-                Location = new Point(50, 100),
+                ForeColor = Color.FromArgb(255, 193, 7), // Modern amber
+                Location = new Point(50, 110),
                 AutoSize = true,
-                Visible = true
+                Visible = true,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
             };
 
             _btnConnectLocal.Click += async (_, __) =>
@@ -216,9 +228,13 @@ namespace BattleShips.Client
         private void OnPaintGrid(object? sender, PaintEventArgs e)
         {
             var g = e.Graphics;
-            g.Clear(Color.FromArgb(20, 26, 38));
+            g.Clear(Color.FromArgb(15, 20, 30)); // Modern dark background
+            
+            // Enable anti-aliasing for smooth graphics
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            using var font = new Font(Font.FontFamily, 10, FontStyle.Bold);
+            using var font = new Font("Segoe UI", 10, FontStyle.Bold);
             
             _renderer.DrawBoards(g, _model, font);
             
@@ -229,23 +245,60 @@ namespace BattleShips.Client
                 _paletteRenderer.DrawShipPalette(g, _model, font, ClientSize.Width, boardHeight);
             }
 
-            const int pad = 8;
+            const int pad = 12;
             var statusText = _lblStatus?.Text ?? "";
             var countdownText = _lblCountdown?.Text ?? "";
 
-            var statusSize = g.MeasureString(statusText, font);
-            var statusRect = new RectangleF(_renderer.Margin - pad / 2f, 8 - pad / 2f, statusSize.Width + pad, statusSize.Height + pad);
-            using (var bg = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
-                g.FillRectangle(bg, statusRect);
-            g.DrawString(statusText, font, Brushes.White, statusRect.Left + pad / 2f, statusRect.Top + pad / 2f);
+            // Modern status box with rounded corners effect
+            using (var statusFont = new Font("Segoe UI", 10, FontStyle.Bold))
+            {
+                var statusSize = g.MeasureString(statusText, statusFont);
+                var statusRect = new RectangleF(_renderer.Margin - pad / 2f, 8 - pad / 2f, statusSize.Width + pad, statusSize.Height + pad);
+                
+                // Gradient background for status
+                using (var bg = new SolidBrush(Color.FromArgb(180, 25, 35, 50)))
+                {
+                    g.FillRectangle(bg, statusRect);
+                }
+                // Border
+                using (var border = new Pen(Color.FromArgb(100, 100, 150, 200), 1))
+                {
+                    g.DrawRectangle(border, Rectangle.Round(statusRect));
+                }
+                
+                using (var textBrush = new SolidBrush(Color.FromArgb(220, 220, 220)))
+                {
+                    g.DrawString(statusText, statusFont, textBrush, statusRect.Left + pad / 2f, statusRect.Top + pad / 2f);
+                }
+            }
 
-            var countdownSize = g.MeasureString(countdownText, font);
-            var countdownWidth = countdownSize.Width + pad;
-            var centerX = (ClientSize.Width - countdownWidth) / 2f;
-            var countdownRect = new RectangleF(centerX, 8 - pad / 2f, countdownWidth, countdownSize.Height + pad);
-            using (var bg2 = new SolidBrush(Color.FromArgb(140, 30, 30, 0)))
-                g.FillRectangle(bg2, countdownRect);
-            g.DrawString(countdownText, font, Brushes.Yellow, countdownRect.Left + pad / 2f, countdownRect.Top + pad / 2f);
+            // Modern countdown box
+            if (!string.IsNullOrEmpty(countdownText))
+            {
+                using (var countdownFont = new Font("Segoe UI", 11, FontStyle.Bold))
+                {
+                    var countdownSize = g.MeasureString(countdownText, countdownFont);
+                    var countdownWidth = countdownSize.Width + pad;
+                    var centerX = (ClientSize.Width - countdownWidth) / 2f;
+                    var countdownRect = new RectangleF(centerX, 8 - pad / 2f, countdownWidth, countdownSize.Height + pad);
+                    
+                    // Gradient background for countdown
+                    using (var bg2 = new SolidBrush(Color.FromArgb(180, 50, 40, 10)))
+                    {
+                        g.FillRectangle(bg2, countdownRect);
+                    }
+                    // Border
+                    using (var border = new Pen(Color.FromArgb(150, 255, 193, 7), 2))
+                    {
+                        g.DrawRectangle(border, Rectangle.Round(countdownRect));
+                    }
+                    
+                    using (var textBrush = new SolidBrush(Color.FromArgb(255, 193, 7)))
+                    {
+                        g.DrawString(countdownText, countdownFont, textBrush, countdownRect.Left + pad / 2f, countdownRect.Top + pad / 2f);
+                    }
+                }
+            }
 
             if (_model.IsDisasterAnimating && !string.IsNullOrEmpty(_model.CurrentDisasterName))
             {
