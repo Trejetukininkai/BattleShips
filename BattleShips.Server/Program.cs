@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using BattleShips.Core;
+using BattleShips.Core.Server;
 using System;
 using System.IO;
 using System.Collections.Concurrent;
@@ -58,9 +59,8 @@ public class GameHub : Hub
         _hubContext = hubContext;
     }
 
-    // simple global tracking to allow only two players per game and a global waiting slot
-    private static readonly ConcurrentDictionary<string, GameInstance> Games = new();
-    private static readonly ConcurrentDictionary<string, string> PlayerGame = new(); // connectionId -> gameId
+    // Use GameManager singleton for all game state management
+    private readonly GameManager _gameManager = GameManager.Instance;
     private static readonly object _lock = new();
 
     // Maximum players per game = 2
@@ -68,36 +68,9 @@ public class GameHub : Hub
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] OnConnectedAsync: conn={connId}");
-        GameInstance? assigned = null;
-        lock (_lock)
-        {
-            // try to find an existing waiting game (has one player and not started)
-            assigned = Games.Values.FirstOrDefault(g => !g.HasSecondPlayer && !g.Started);
-            if (assigned == null)
-            {
-                // create new game
-                var id = Guid.NewGuid().ToString("N");
-                assigned = new GameInstance(id)
-                {
-                    // initialize game mode so disaster countdown / generator exists
-                    GameMode = new GameMode(shipCount: 10, boardX: Board.Size, boardY: Board.Size)
-                };
-                Console.WriteLine($"[Server] Created new GameInstance id={id} with GameMode");
-                Games[id] = assigned;
-            }
-            else
-            {
-                Console.WriteLine($"[Server] Reusing game id={assigned.Id} for new connection");
-            }
-
-            // add player
-            if (!assigned.HasFirstPlayer)
-                assigned.PlayerA = connId;
-            else if (!assigned.HasSecondPlayer)
-                assigned.PlayerB = connId;
-
-            PlayerGame[connId] = assigned.Id;
-        }
+        
+        // Use GameManager to assign player to game
+        var assigned = _gameManager.AssignPlayerToGame(connId);
 
         Console.WriteLine($"Client connected: {connId} -> game {assigned.Id} (players={assigned.PlayerCount})");
 
@@ -130,7 +103,8 @@ public class GameHub : Hub
                     // timeout expired - set cancellation flag (will be handled in hub methods)
                     lock (_lock)
                     {
-                        if (Games.TryGetValue(gameId, out var game) && !game.Started)
+                        var game = _gameManager.GetGame(gameId);
+                        if (game != null && !game.Started)
                         {
                             Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
                             game.Started = true; // mark timeout expired
@@ -151,27 +125,17 @@ public class GameHub : Hub
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var connId = Context.ConnectionId;
-        if (PlayerGame.TryRemove(connId, out var gid))
+        
+        // Use GameManager to handle player removal
+        var (game, gameId) = _gameManager.RemovePlayer(connId);
+        
+        if (game != null && gameId != null)
         {
-            if (Games.TryGetValue(gid, out var g))
+            // Notify opponent
+            var other = game.Other(connId);
+            if (other != null)
             {
-                // notify opponent
-                var other = g.Other(connId);
-                if (other != null)
-                {
-                    await Clients.Client(other).SendAsync("OpponentDisconnected", "Opponent disconnected.");
-                }
-
-                // remove game if no players left
-                if (!g.HasFirstPlayer && !g.HasSecondPlayer)
-                {
-                    Games.TryRemove(gid, out _);
-                }
-                else
-                {
-                    // clear slot
-                    g.RemovePlayer(connId);
-                }
+                await Clients.Client(other).SendAsync("OpponentDisconnected", "Opponent disconnected.");
             }
         }
 
@@ -184,17 +148,17 @@ public class GameHub : Hub
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] PlaceShips called by {connId} with {shipCells?.Count ?? 0} positions");
-        if (!PlayerGame.TryGetValue(connId, out var gid) || !Games.TryGetValue(gid, out var g))
+        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
         {
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
 
         // Check if game should be cancelled due to timeout
-        if (g.ShouldCancelOnNextAction)
+        if (g!.ShouldCancelOnNextAction)
         {
             Console.WriteLine($"[Server] Game {gid} timeout exceeded - cancelling on PlaceShips");
-            await CancelGame(g, gid, "Placement timeout exceeded");
+            await CancelGame(g, gid!, "Placement timeout exceeded");
             return;
         }
 
@@ -203,7 +167,7 @@ public class GameHub : Hub
         if (validationError != null)
         {
             Console.WriteLine($"[Server] Ship placement validation failed for {connId}: {validationError}");
-            await CancelGame(g, gid, validationError);
+            await CancelGame(g, gid!, validationError);
             return;
         }
 
@@ -305,22 +269,15 @@ public class GameHub : Hub
 
         lock (_lock)
         {
-            result = HandleMoveUnderLock(g, gid, connId, col, row);
+            result = HandleMoveUnderLock(g!, gid!, connId, col, row);
         }
 
-        await ProcessMoveResults(g, gid, connId, result);
+        await ProcessMoveResults(g!, gid!, connId, result);
     }
 
-    private bool TryGetGame(string connId, out GameInstance? game, out string gid)
+    private bool TryGetGame(string connId, out GameInstance? game, out string? gid)
     {
-        game = null!;
-        gid = null!;
-        if (!PlayerGame.TryGetValue(connId, out gid!) || !Games.TryGetValue(gid, out game))
-        {
-            Console.WriteLine($"[Server] MakeMove: game not found for conn {connId}");
-            return false;
-        }
-        return true;
+        return _gameManager.ValidatePlayerInGame(connId, out game, out gid);
     }
     private async Task SendError(string connId, string message)
     {
@@ -454,16 +411,13 @@ public class GameHub : Hub
 
     private void CleanupGame(string gid, GameInstance g)
     {
-        Games.TryRemove(gid, out _);
-        if (g.PlayerA != null) PlayerGame.TryRemove(g.PlayerA, out _);
-        if (g.PlayerB != null) PlayerGame.TryRemove(g.PlayerB, out _);
-        Console.WriteLine($"[Server] Cleaned up game {gid}");
+        _gameManager.RemoveGame(gid, g);
     }
 
     private async Task BroadcastTurnUpdates(string gid, GameInstance g)
     {
-        if (!Games.TryGetValue(gid, out var freshGame)) return;
-        if (freshGame.CurrentTurn == null) return;
+        var freshGame = _gameManager.GetGame(gid);
+        if (freshGame?.CurrentTurn == null) return;
 
         await Clients.Client(freshGame.CurrentTurn).SendAsync("YourTurn");
         var other = freshGame.Other(freshGame.CurrentTurn);
@@ -626,12 +580,9 @@ public class GameHub : Hub
 
             Console.WriteLine($"[Server] Game {game.Id} cancelled: {reason}");
             
-            // Find the game ID for this instance
-            var gid = Games.FirstOrDefault(x => x.Value == game).Key;
-            if (gid != null)
-            {
-                await CancelGame(game, gid, reason);
-            }
+            // Use the game's ID directly
+            var gid = game.Id;
+            await CancelGame(game, gid, reason);
             
             return false; // Game cancelled
         }
