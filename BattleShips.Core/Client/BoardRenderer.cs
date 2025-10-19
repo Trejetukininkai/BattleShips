@@ -224,24 +224,79 @@ namespace BattleShips.Core
                 }
             }
 
-            // animated impact overlay (draw on top of boards) - semi-transparent yellow ring
-            using (var animBrush = new SolidBrush(Color.FromArgb(180, 255, 200, 0)))
-            using (var animPen = new Pen(Color.FromArgb(220, 255, 140, 0), 3))
+            // Enhanced animated disaster effects (draw on top of boards)
+            foreach (var p in model.AnimatedCells)
             {
-                foreach (var p in model.AnimatedCells)
+                if (p.X >= 0 && p.Y >= 0 && p.X < Board.Size && p.Y < Board.Size)
                 {
-                    // determine whether cell is on left or right board (we animate impacts on both boards if present)
-                    var lx = left.X + p.X * Cell;
-                    var ly = left.Y + p.Y * Cell;
-                    var rx = right.X + p.X * Cell;
-                    var ry = right.Y + p.Y * Cell;
-
-                    // draw small filled circle + ring on left board
-                    if (p.X >= 0 && p.Y >= 0 && p.X < Board.Size && p.Y < Board.Size)
+                    var x = left.X + p.X * Cell;
+                    var y = left.Y + p.Y * Cell;
+                    var centerX = x + Cell / 2f;
+                    var centerY = y + Cell / 2f;
+                    
+                    // Pulsing energy effect
+                    var time = Environment.TickCount / 100.0f;
+                    var pulse = (float)(0.5 + 0.5 * Math.Sin(time * 0.8));
+                    var size = Cell * (0.3f + pulse * 0.4f);
+                    
+                    // Outer glow ring
+                    using (var outerBrush = new SolidBrush(Color.FromArgb((int)(120 * pulse), 255, 100, 0)))
                     {
-                        // we draw on left board by default (disaster is applied to the board coordinates)
-                        g.FillEllipse(animBrush, lx + 6, ly + 6, Cell - 12, Cell - 12);
-                        g.DrawEllipse(animPen, lx + 6, ly + 6, Cell - 12, Cell - 12);
+                        var outerSize = size * 1.8f;
+                        g.FillEllipse(outerBrush, centerX - outerSize/2, centerY - outerSize/2, outerSize, outerSize);
+                    }
+                    
+                    // Middle energy ring
+                    using (var middleBrush = new SolidBrush(Color.FromArgb((int)(180 * pulse), 255, 200, 50)))
+                    {
+                        var middleSize = size * 1.3f;
+                        g.FillEllipse(middleBrush, centerX - middleSize/2, centerY - middleSize/2, middleSize, middleSize);
+                    }
+                    
+                    // Inner core
+                    using (var coreBrush = new SolidBrush(Color.FromArgb((int)(220 + 35 * pulse), 255, 255, 200)))
+                    {
+                        g.FillEllipse(coreBrush, centerX - size/2, centerY - size/2, size, size);
+                    }
+                    
+                    // Rotating energy spikes
+                    using (var spikePen = new Pen(Color.FromArgb((int)(200 * pulse), 255, 150, 0), 3))
+                    {
+                        var spikeLength = Cell * 0.6f;
+                        for (int i = 0; i < 8; i++)
+                        {
+                            var angle = time * 0.5f + i * Math.PI / 4;
+                            var startX = centerX + (float)Math.Cos(angle) * (size * 0.4f);
+                            var startY = centerY + (float)Math.Sin(angle) * (size * 0.4f);
+                            var endX = centerX + (float)Math.Cos(angle) * spikeLength;
+                            var endY = centerY + (float)Math.Sin(angle) * spikeLength;
+                            
+                            g.DrawLine(spikePen, startX, startY, endX, endY);
+                        }
+                    }
+                    
+                    // Electric arcs
+                    using (var arcPen = new Pen(Color.FromArgb((int)(150 * pulse), 100, 200, 255), 2))
+                    {
+                        var random = new Random(p.X * 1000 + p.Y); // Consistent randomness per cell
+                        for (int i = 0; i < 4; i++)
+                        {
+                            var angle1 = random.NextSingle() * (float)Math.PI * 2;
+                            var angle2 = angle1 + (random.NextSingle() - 0.5f) * (float)Math.PI;
+                            var radius = size * 0.3f;
+                            
+                            var x1 = centerX + (float)Math.Cos(angle1) * radius;
+                            var y1 = centerY + (float)Math.Sin(angle1) * radius;
+                            var x2 = centerX + (float)Math.Cos(angle2) * radius;
+                            var y2 = centerY + (float)Math.Sin(angle2) * radius;
+                            
+                            // Jagged arc effect
+                            var midX = (x1 + x2) / 2 + (random.NextSingle() - 0.5f) * 10;
+                            var midY = (y1 + y2) / 2 + (random.NextSingle() - 0.5f) * 10;
+                            
+                            g.DrawLine(arcPen, x1, y1, midX, midY);
+                            g.DrawLine(arcPen, midX, midY, x2, y2);
+                        }
                     }
                 }
             }
