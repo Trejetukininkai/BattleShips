@@ -34,7 +34,9 @@ namespace BattleShips.Client
             {
                 _model.State = AppState.Placement;
                 _model.PlacementSecondsLeft = secs;
-                _lblStatus!.Text = $"Placement: place 10 ships ({_model.YourShips.Count}/10)";
+                var placedCount = _model.YourShips.Count(s => s.IsPlaced);
+                var totalCount = _model.YourShips.Count;
+                _lblStatus!.Text = $"Placement: drag ships from palette below ({placedCount}/{totalCount})";
                 UpdateCountdownLabel();
                 _uiTimer!.Start();
                 Invalidate();

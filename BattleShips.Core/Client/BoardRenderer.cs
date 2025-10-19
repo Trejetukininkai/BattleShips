@@ -101,11 +101,59 @@ namespace BattleShips.Core
             g.DrawString(rightTitle, titleFont, labelBrush, rightTitleX, titleY);
 
             // draw your ships on left
-            foreach (var p in model.YourShips)
+            using (var shipBrush = new SolidBrush(Color.FromArgb(180, 144, 238, 144))) // Light green with transparency
+            using (var shipBorderBrush = new SolidBrush(Color.FromArgb(120, 34, 139, 34))) // Dark green for borders
             {
-                var x = left.X + p.X * Cell;
-                var y = left.Y + p.Y * Cell;
-                g.FillEllipse(Brushes.LightGreen, x + 8, y + 8, Cell - 16, Cell - 16);
+                foreach (var ship in model.YourShips.Where(s => s.IsPlaced))
+                {
+                    var cells = ship.GetOccupiedCells();
+                    foreach (var cell in cells)
+                    {
+                        var x = left.X + cell.X * Cell;
+                        var y = left.Y + cell.Y * Cell;
+                        
+                        // Draw ship rectangle with border
+                        g.FillRectangle(shipBrush, x + 4, y + 4, Cell - 8, Cell - 8);
+                        g.FillRectangle(shipBorderBrush, x + 4, y + 4, Cell - 8, 2); // top border
+                        g.FillRectangle(shipBorderBrush, x + 4, y + Cell - 6, Cell - 8, 2); // bottom border
+                        g.FillRectangle(shipBorderBrush, x + 4, y + 4, 2, Cell - 8); // left border
+                        g.FillRectangle(shipBorderBrush, x + Cell - 6, y + 4, 2, Cell - 8); // right border
+                    }
+                }
+            }
+
+            // Draw dragged ship preview
+            if (model.DraggedShip != null && model.DraggedShip.Position.X >= 0 && model.DraggedShip.Position.Y >= 0)
+            {
+                var previewShip = model.DraggedShip;
+                var isValidPlacement = model.CanPlaceShip(previewShip, previewShip.Position);
+                
+                // Choose color based on validity
+                var previewColor = isValidPlacement ? 
+                    Color.FromArgb(120, 144, 238, 144) : // Semi-transparent green for valid
+                    Color.FromArgb(120, 255, 100, 100);   // Semi-transparent red for invalid
+                
+                using (var previewBrush = new SolidBrush(previewColor))
+                using (var previewBorderBrush = new SolidBrush(Color.FromArgb(150, 255, 255, 255))) // White border
+                {
+                    var cells = previewShip.GetOccupiedCells();
+                    foreach (var cell in cells)
+                    {
+                        // Only draw if within board bounds
+                        if (cell.X >= 0 && cell.X < Board.Size && cell.Y >= 0 && cell.Y < Board.Size)
+                        {
+                            var x = left.X + cell.X * Cell;
+                            var y = left.Y + cell.Y * Cell;
+                            
+                            // Draw preview ship rectangle with border
+                            g.FillRectangle(previewBrush, x + 2, y + 2, Cell - 4, Cell - 4);
+                            g.FillRectangle(previewBorderBrush, x + 2, y + 2, Cell - 4, 2); // top border
+                            g.FillRectangle(previewBorderBrush, x + 2, y + Cell - 4, Cell - 4, 2); // bottom border
+                            g.FillRectangle(previewBorderBrush, x + 2, y + 2, 2, Cell - 4); // left border
+                            g.FillRectangle(previewBorderBrush, x + Cell - 4, y + 2, 2, Cell - 4); // right border
+                        }
+                    }
+                }
             }
 
             // opponent shots on your board
@@ -113,7 +161,9 @@ namespace BattleShips.Core
             {
                 var x = left.X + p.X * Cell;
                 var y = left.Y + p.Y * Cell;
-                var wasShip = model.YourShips.Contains(p);
+                
+                // Check if this hit was on a ship
+                var wasShip = model.YourShips.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(p));
                 g.FillEllipse(wasShip ? Brushes.Red : Brushes.Gray, x + 10, y + 10, Cell - 20, Cell - 20);
             }
 

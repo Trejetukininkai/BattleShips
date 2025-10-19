@@ -14,6 +14,7 @@ namespace BattleShips.Client
         private readonly GameClientController _controller;
         private readonly GameModel _model = new GameModel();
         private readonly BoardRenderer _renderer = new BoardRenderer(cell: 40, margin: 80);
+        private readonly ShipPaletteRenderer _paletteRenderer = new ShipPaletteRenderer(cell: 40, margin: 80);
 
         private bool _awaitingMove = false;
 
@@ -30,17 +31,28 @@ namespace BattleShips.Client
             DoubleBuffered = true;
 
             var totalWidth = 2 * _renderer.Margin + Board.Size * _renderer.Cell * 2;
-            var totalHeight = 2 * _renderer.Margin + Board.Size * _renderer.Cell + 80;
+            var boardHeight = Board.Size * _renderer.Cell;
+            var totalHeight = 2 * _renderer.Margin + boardHeight + 120; // Extra space for palette below
             MinimumSize = new Size(totalWidth, totalHeight);
 
             var rawClient = new GameClient();
             _controller = new GameClientController(rawClient, _model);
 
+            // Initialize fleet
+            _model.YourShips.AddRange(FleetConfiguration.CreateStandardFleet());
+
             InitStartupPanel();
 
             Paint += OnPaintGrid;
             MouseClick += OnMouseClickGrid;
+            MouseDown += OnMouseDown;
+            MouseUp += OnMouseUp;
+            MouseMove += OnMouseMove;
+            KeyDown += OnKeyDown;
             Resize += (_, __) => Invalidate();
+            
+            // Enable key events
+            KeyPreview = true;
 
             _uiTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _uiTimer.Tick += UiTimer_Tick;
@@ -191,6 +203,8 @@ namespace BattleShips.Client
         private void ResetBoards()
         {
             _model.Reset();
+            // Re-initialize fleet after reset
+            _model.YourShips.AddRange(FleetConfiguration.CreateStandardFleet());
             _uiTimer?.Stop();
             UpdateCountdownLabel();
             Invalidate();
@@ -205,7 +219,15 @@ namespace BattleShips.Client
             g.Clear(Color.FromArgb(20, 26, 38));
 
             using var font = new Font(Font.FontFamily, 10, FontStyle.Bold);
+            
             _renderer.DrawBoards(g, _model, font);
+            
+            // Draw ship palette below boards if in placement mode
+            if (_model.State == AppState.Placement)
+            {
+                var boardHeight = Board.Size * _renderer.Cell;
+                _paletteRenderer.DrawShipPalette(g, _model, font, ClientSize.Width, boardHeight);
+            }
 
             const int pad = 8;
             var statusText = _lblStatus?.Text ?? "";
@@ -237,43 +259,106 @@ namespace BattleShips.Client
             }
         }
 
+        private void OnMouseDown(object? sender, MouseEventArgs e)
+        {
+            if (_model.State != AppState.Placement) return;
+            
+            var mouse = new Point(e.X, e.Y);
+            
+            // Check if clicking on ship palette
+            var boardHeight = Board.Size * _renderer.Cell;
+            var ship = _paletteRenderer.HitTestShip(mouse, _model, ClientSize.Width, boardHeight);
+            if (ship != null && !ship.IsPlaced)
+            {
+                _model.DraggedShip = ship;
+                _model.DragOffset = Point.Empty;
+                Cursor = Cursors.Hand;
+            }
+            else if (e.Button == MouseButtons.Right && _model.DraggedShip != null)
+            {
+                // Right-click to rotate ship
+                _model.DraggedShip.Rotate();
+                Invalidate();
+            }
+        }
+
+        private void OnMouseMove(object? sender, MouseEventArgs e)
+        {
+            if (_model.DraggedShip != null)
+            {
+                var leftRect = _renderer.GetLeftBoardRect();
+                var boardPos = _renderer.HitTest(new Point(e.X, e.Y), leftRect);
+                
+                // Store the current mouse position for preview drawing
+                _model.DraggedShip.Position = boardPos ?? new Point(-1, -1);
+                
+                if (boardPos != null && _model.CanPlaceShip(_model.DraggedShip, boardPos.Value))
+                {
+                    Cursor = Cursors.Default;
+                }
+                else
+                {
+                    Cursor = Cursors.No;
+                }
+                
+                Invalidate();
+            }
+        }
+
+        private void OnMouseUp(object? sender, MouseEventArgs e)
+        {
+            if (_model.DraggedShip != null)
+            {
+                var leftRect = _renderer.GetLeftBoardRect();
+                var boardPos = _renderer.HitTest(new Point(e.X, e.Y), leftRect);
+                
+                if (boardPos != null && _model.CanPlaceShip(_model.DraggedShip, boardPos.Value))
+                {
+                    _model.PlaceShip(_model.DraggedShip, boardPos.Value);
+                    
+                    // Check if all ships are placed
+                    var allPlaced = _model.YourShips.All(s => s.IsPlaced);
+                    if (allPlaced && _controller.IsConnected)
+                    {
+                        try
+                        {
+                            var shipCells = _model.GetAllShipCells();
+                            _controller.PlaceShips(shipCells);
+                            _model.State = AppState.Waiting;
+                            _uiTimer?.Stop();
+                            _model.PlacementSecondsLeft = 0;
+                            UpdateCountdownLabel();
+                            _lblStatus!.Text = "Placement submitted. Waiting for opponent...";
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show($"Failed to send placement: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    }
+                    else
+                    {
+                        var placedCount = _model.YourShips.Count(s => s.IsPlaced);
+                        var totalCount = _model.YourShips.Count;
+                        _lblStatus!.Text = $"Placement: place ships ({placedCount}/{totalCount})";
+                    }
+                }
+                
+                // Reset the ship position if it wasn't placed
+                if (!_model.DraggedShip.IsPlaced)
+                {
+                    _model.DraggedShip.Position = Point.Empty;
+                }
+                
+                _model.DraggedShip = null;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+        }
+
         private async void OnMouseClickGrid(object? sender, MouseEventArgs e)
         {
-            var leftRect = _renderer.GetLeftBoardRect();
             var rightRect = _renderer.GetRightBoardRect();
             var mouse = new Point(e.X, e.Y);
-
-            var hitLeft = _renderer.HitTest(mouse, leftRect);
-            if (hitLeft != null && _model.State == AppState.Placement)
-            {
-                var ok = _model.ToggleShip(hitLeft.Value, 10);
-                if (!ok)
-                {
-                    MessageBox.Show("Max 10 ships placed", "Placement", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-
-                _lblStatus!.Text = $"Placement: place 10 ships ({_model.YourShips.Count}/10)";
-                Invalidate();
-
-                if (_model.YourShips.Count == 10 && _controller.IsConnected)
-                {
-                    try
-                    {
-                        await _controller.PlaceShips(_model.YourShips.ToList());
-                        _model.State = AppState.Waiting;
-                        _uiTimer?.Stop();
-                        _model.PlacementSecondsLeft = 0;
-                        UpdateCountdownLabel();
-                        _lblStatus!.Text = "Placement submitted. Waiting for opponent...";
-                        Invalidate();
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Failed to send placement: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                }
-                return;
-            }
 
             var hitRight = _renderer.HitTest(mouse, rightRect);
             if (hitRight != null)
@@ -308,6 +393,16 @@ namespace BattleShips.Client
                         Console.WriteLine("Send failed: " + ex.Message);
                     }
                 }
+            }
+        }
+
+        private void OnKeyDown(object? sender, KeyEventArgs e)
+        {
+            if (_model.DraggedShip != null && (e.KeyCode == Keys.R || e.KeyCode == Keys.Space))
+            {
+                _model.DraggedShip.Rotate();
+                Invalidate();
+                e.Handled = true;
             }
         }
     }

@@ -8,7 +8,7 @@ namespace BattleShips.Core
 
     public class GameModel
     {
-        public HashSet<Point> YourShips { get; } = new();
+        public List<Ship> YourShips { get; } = new();
         public HashSet<Point> YourHitsByOpponent { get; } = new();
         public HashSet<Point> YourFired { get; } = new();
         public HashSet<Point> YourFiredHits { get; } = new();
@@ -23,6 +23,10 @@ namespace BattleShips.Core
         public int PlacementSecondsLeft { get; set; }
         public int DisasterCountdown { get; set; } = -1;
 
+        // Drag and drop state
+        public Ship? DraggedShip { get; set; }
+        public Point DragOffset { get; set; }
+
         public void Reset()
         {
             YourShips.Clear();
@@ -35,14 +39,53 @@ namespace BattleShips.Core
             DisasterCountdown = -1;
             CurrentDisasterName = null;
             IsDisasterAnimating = false;
+            DraggedShip = null;
+            DragOffset = Point.Empty;
             State = AppState.Menu;
         }
 
-        public bool ToggleShip(Point p, int max = 10)
+        public bool CanPlaceShip(Ship ship, Point position)
         {
-            if (YourShips.Contains(p)) { YourShips.Remove(p); return true; }
-            if (YourShips.Count >= max) return false;
-            YourShips.Add(p); return true;
+            ship.Position = position;
+            
+            // Check if ship is within board bounds
+            if (!ship.IsValidPosition(Board.Size))
+                return false;
+                
+            // Check for collisions with existing ships
+            var newCells = ship.GetOccupiedCells();
+            foreach (var existingShip in YourShips.Where(s => s.IsPlaced))
+            {
+                if (existingShip == ship) continue;
+                
+                var existingCells = existingShip.GetOccupiedCells();
+                if (newCells.Any(cell => existingCells.Contains(cell)))
+                    return false;
+            }
+            
+            return true;
+        }
+
+        public void PlaceShip(Ship ship, Point position)
+        {
+            if (CanPlaceShip(ship, position))
+            {
+                ship.Position = position;
+                ship.IsPlaced = true;
+            }
+        }
+
+        public void RemoveShip(Ship ship)
+        {
+            ship.IsPlaced = false;
+            ship.Position = Point.Empty;
+        }
+
+        public List<Point> GetAllShipCells()
+        {
+            return YourShips.Where(s => s.IsPlaced)
+                           .SelectMany(s => s.GetOccupiedCells())
+                           .ToList();
         }
 
         public void ApplyMoveResult(Point p, bool hit)
@@ -54,7 +97,11 @@ namespace BattleShips.Core
         public void ApplyOpponentMove(Point p, bool hit)
         {
             YourHitsByOpponent.Add(p);
-            if (hit) YourShips.Remove(p);
+            if (hit)
+            {
+                // Mark the hit cell but don't remove from ship list
+                // The server will handle ship destruction logic
+            }
         }
     }
 }

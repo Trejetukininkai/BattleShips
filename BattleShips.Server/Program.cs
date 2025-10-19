@@ -179,11 +179,11 @@ public class GameHub : Hub
         await base.OnDisconnectedAsync(exception);
     }
 
-    // Client -> server: place ships (list of points), ships are 1x1 cells; expect 10 positions
-    public async Task PlaceShips(List<Point> ships)
+    // Client -> server: place ships (list of points), ships are now multi-cell rectangles
+    public async Task PlaceShips(List<Point> shipCells)
     {
         var connId = Context.ConnectionId;
-        Console.WriteLine($"[Server] PlaceShips called by {connId} with {ships?.Count ?? 0} positions");
+        Console.WriteLine($"[Server] PlaceShips called by {connId} with {shipCells?.Count ?? 0} positions");
         if (!PlayerGame.TryGetValue(connId, out var gid) || !Games.TryGetValue(gid, out var g))
         {
             await Clients.Caller.SendAsync("Error", "Game not found");
@@ -199,7 +199,7 @@ public class GameHub : Hub
         }
 
         // Validate ship placements
-        var validationError = ValidateShipPlacement(ships);
+        var validationError = ValidateShipPlacement(shipCells);
         if (validationError != null)
         {
             Console.WriteLine($"[Server] Ship placement validation failed for {connId}: {validationError}");
@@ -207,12 +207,9 @@ public class GameHub : Hub
             return;
         }
 
-        // accept up to 10 unique valid positions
-        var unique = ships?.Distinct().Take(10).ToList() ?? new List<Point>();
-        if (unique.Count > 10) unique = unique.Take(10).ToList();
-
-        g.SetPlayerShips(connId, new HashSet<Point>(unique));
-        await Clients.Caller.SendAsync("PlacementAck", unique.Count);
+        // Accept ship placement
+        g.SetPlayerShips(connId, shipCells ?? new List<Point>());
+        await Clients.Caller.SendAsync("PlacementAck", shipCells?.Count ?? 0);
 
         // if both ready start immediately
         if (g.ReadyA && g.ReadyB && !g.Started)
@@ -222,25 +219,26 @@ public class GameHub : Hub
         }
     }
 
-    private string? ValidateShipPlacement(List<Point>? ships)
+    private string? ValidateShipPlacement(List<Point>? shipCells)
     {
-        if (ships == null || ships.Count == 0)
+        if (shipCells == null || shipCells.Count == 0)
             return null; // Allow empty placements (game will start with 0 ships)
 
         // Check for duplicate positions
-        if (ships.Count != ships.Distinct().Count())
+        if (shipCells.Count != shipCells.Distinct().Count())
             return "Ship placement contains duplicate positions";
 
-        // Check if ships are within board bounds
-        foreach (var ship in ships)
+        // Check if ship cells are within board bounds
+        foreach (var cell in shipCells)
         {
-            if (ship.X < 0 || ship.X >= Board.Size || ship.Y < 0 || ship.Y >= Board.Size)
-                return $"Ship at ({ship.X}, {ship.Y}) is outside board bounds (0-{Board.Size - 1})";
+            if (cell.X < 0 || cell.X >= Board.Size || cell.Y < 0 || cell.Y >= Board.Size)
+                return $"Ship cell at ({cell.X}, {cell.Y}) is outside board bounds (0-{Board.Size - 1})";
         }
 
-        // Check if more than 10 ships
-        if (ships.Count > 10)
-            return "Cannot place more than 10 ships";
+        // Check if total ship cells matches expected fleet (5+4+3+3+2 = 17 cells)
+        var expectedCells = FleetConfiguration.StandardFleet.Sum();
+        if (shipCells.Count != expectedCells)
+            return $"Expected {expectedCells} ship cells, got {shipCells.Count}";
 
         return null; // Valid placement
     }
@@ -387,8 +385,25 @@ public class GameHub : Hub
 
         foreach (var p in affected)
         {
-            if (g.ShipsA.Remove(p)) hitsForA.Add(p);
-            if (g.ShipsB.Remove(p)) hitsForB.Add(p);
+            // Check if disaster hits any ship cells for player A
+            foreach (var ship in g.ShipsA.ToList())
+            {
+                if (ship.GetOccupiedCells().Contains(p))
+                {
+                    hitsForA.Add(p);
+                    break;
+                }
+            }
+            
+            // Check if disaster hits any ship cells for player B
+            foreach (var ship in g.ShipsB.ToList())
+            {
+                if (ship.GetOccupiedCells().Contains(p))
+                {
+                    hitsForB.Add(p);
+                    break;
+                }
+            }
         }
 
         g.EventInProgress = true;
