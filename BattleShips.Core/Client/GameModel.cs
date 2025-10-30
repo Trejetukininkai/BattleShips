@@ -23,6 +23,7 @@ namespace BattleShips.Core
         private int _disasterCountdown = -1;
         private string? _currentDisasterName;
         private bool _isDisasterAnimating;
+        private bool? _lastMoveResult; // null = no recent result, true = hit, false = miss
 
         // current disaster info (set while animating)
         public string? CurrentDisasterName
@@ -116,6 +117,17 @@ namespace BattleShips.Core
             }
         }
 
+        // Move result tracking for SFX
+        public bool? LastMoveResult
+        {
+            get => _lastMoveResult;
+            set
+            {
+                _lastMoveResult = value;
+                OnModelPropertyChanged(nameof(LastMoveResult));
+            }
+        }
+
         // Drag and drop state
         public Ship? DraggedShip { get; set; }
         public Point DragOffset { get; set; }
@@ -187,6 +199,7 @@ namespace BattleShips.Core
         {
             YourFired.Add(p);
             if (hit) YourFiredHits.Add(p);
+            LastMoveResult = hit; // Trigger SFX notification
         }
 
         public void ApplyOpponentMove(Point p, bool hit)
@@ -197,6 +210,7 @@ namespace BattleShips.Core
                 // Mark the hit cell but don't remove from ship list
                 // The server will handle ship destruction logic
             }
+            LastMoveResult = hit; // Trigger SFX notification
         }
 
         public void ApplyOpponentHitByDisaster(Point p)

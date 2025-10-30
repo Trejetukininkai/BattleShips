@@ -10,10 +10,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BattleShips.Core\BattleShips.Core.csproj" />
+     <None Include="Sounds\**">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.8" />
     <PackageReference Include="DotNetEnv" Version="3.1.1" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 </Project>

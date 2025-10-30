@@ -13,6 +13,7 @@ namespace BattleShips.Client
     {
         private readonly GameClientController _controller;
         private readonly GameModel _model = new GameModel();
+        private readonly SFXService _sfx;
         private readonly BoardRenderer _renderer = new BoardRenderer(cell: 40, margin: 80);
         private readonly ShipPaletteRenderer _paletteRenderer = new ShipPaletteRenderer(cell: 40, margin: 80);
 
@@ -57,6 +58,8 @@ namespace BattleShips.Client
             
             // Enable key events
             KeyPreview = true;
+
+            _sfx = new SFXService(_model);
 
             _uiTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _uiTimer.Tick += UiTimer_Tick;
@@ -741,7 +744,8 @@ namespace BattleShips.Client
                 if (boardPos != null && _model.CanPlaceShip(_model.DraggedShip, boardPos.Value))
                 {
                     _model.PlaceShip(_model.DraggedShip, boardPos.Value);
-                    
+                    _sfx.PlayShipPlacedSound();
+
                     // Check if all ships are placed
                     var allPlaced = _model.YourShips.All(s => s.IsPlaced);
                     if (allPlaced && _controller.IsConnected)
