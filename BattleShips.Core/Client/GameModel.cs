@@ -6,7 +6,8 @@ namespace BattleShips.Core
 {
     public enum AppState { Menu, Waiting, Placement, Playing, GameOver }
 
-    public class GameModel
+    // Observable for client side UI
+    public class GameModel : INotifyPropertyChanged
     {
         public List<Ship> YourShips { get; } = new();
         public HashSet<Point> YourHitsByOpponent { get; } = new();
@@ -14,19 +15,112 @@ namespace BattleShips.Core
         public HashSet<Point> YourFiredHits { get; } = new();
         public HashSet<Point> AnimatedCells { get; } = new();
 
-        // current disaster info (set while animating)
-        public string? CurrentDisasterName { get; set; }
-        public bool IsDisasterAnimating { get; set; }
+        // UI state properties with change notifications
+        private string _currentStatus = "Ready to start your naval adventure";
+        private AppState _state = AppState.Menu;
+        private bool _isMyTurn;
+        private int _placementSecondsLeft;
+        private int _disasterCountdown = -1;
+        private string? _currentDisasterName;
+        private bool _isDisasterAnimating;
 
-        public AppState State { get; set; } = AppState.Menu;
-        public bool IsMyTurn { get; set; }
-        public int PlacementSecondsLeft { get; set; }
-        public int DisasterCountdown { get; set; } = -1;
+        // current disaster info (set while animating)
+        public string? CurrentDisasterName
+        {
+            get => _currentDisasterName;
+            set
+            {
+                if (_currentDisasterName != value)
+                {
+                    _currentDisasterName = value;
+                    OnModelPropertyChanged(nameof(CurrentDisasterName));
+                }
+            }
+        }
+
+        public bool IsDisasterAnimating
+        {
+            get => _isDisasterAnimating;
+            set
+            {
+                if (_isDisasterAnimating != value)
+                {
+                    _isDisasterAnimating = value;
+                    OnModelPropertyChanged(nameof(IsDisasterAnimating));
+                }
+            }
+        }
+
+        public AppState State
+        {
+            get => _state;
+            set
+            {
+                if (_state != value)
+                {
+                    _state = value;
+                    OnModelPropertyChanged(nameof(State));
+                }
+            }
+        }
+
+        public bool IsMyTurn
+        {
+            get => _isMyTurn;
+            set
+            {
+                if (_isMyTurn != value)
+                {
+                    _isMyTurn = value;
+                    OnModelPropertyChanged(nameof(IsMyTurn));
+                }
+            }
+        }
+
+        public int PlacementSecondsLeft
+        {
+            get => _placementSecondsLeft;
+            set
+            {
+                if (_placementSecondsLeft != value)
+                {
+                    _placementSecondsLeft = value;
+                    OnModelPropertyChanged(nameof(PlacementSecondsLeft));
+                }
+            }
+        }
+
+        public int DisasterCountdown
+        {
+            get => _disasterCountdown;
+            set
+            {
+                if (_disasterCountdown != value)
+                {
+                    _disasterCountdown = value;
+                    OnModelPropertyChanged(nameof(DisasterCountdown));
+                }
+            }
+        }
+
+        public string CurrentStatus
+        {
+            get => _currentStatus;
+            set
+            {
+                if (_currentStatus != value)
+                {
+                    _currentStatus = value;
+                    OnModelPropertyChanged(nameof(CurrentStatus));
+                }
+            }
+        }
 
         // Drag and drop state
         public Ship? DraggedShip { get; set; }
         public Point DragOffset { get; set; }
 
+        public event PropertyChangedEventHandler? PropertyChanged;
         public void Reset()
         {
             YourShips.Clear();
@@ -39,6 +133,7 @@ namespace BattleShips.Core
             DisasterCountdown = -1;
             CurrentDisasterName = null;
             IsDisasterAnimating = false;
+            CurrentStatus = "Ready to start your naval adventure";
             DraggedShip = null;
             DragOffset = Point.Empty;
             State = AppState.Menu;
@@ -47,22 +142,22 @@ namespace BattleShips.Core
         public bool CanPlaceShip(Ship ship, Point position)
         {
             ship.Position = position;
-            
+
             // Check if ship is within board bounds
             if (!ship.IsValidPosition(Board.Size))
                 return false;
-                
+
             // Check for collisions with existing ships
             var newCells = ship.GetOccupiedCells();
             foreach (var existingShip in YourShips.Where(s => s.IsPlaced))
             {
                 if (existingShip == ship) continue;
-                
+
                 var existingCells = existingShip.GetOccupiedCells();
                 if (newCells.Any(cell => existingCells.Contains(cell)))
                     return false;
             }
-            
+
             return true;
         }
 
@@ -110,6 +205,11 @@ namespace BattleShips.Core
             // Add it to YourFiredHits so it shows up on the opponent board (right side)
             YourFired.Add(p);
             YourFiredHits.Add(p);
+        }
+
+        protected virtual void OnModelPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
     }
 }

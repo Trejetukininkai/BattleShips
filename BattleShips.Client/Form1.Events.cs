@@ -26,8 +26,7 @@ namespace BattleShips.Client
             _controller.WaitingForOpponent += msg => BeginInvoke(() =>
             {
                 _model.State = AppState.Waiting;
-                _lblStatus!.Text = msg ?? "Waiting for opponent...";
-                Invalidate();
+                _model.CurrentStatus = msg ?? "Waiting for opponent...";
             });
 
             _controller.StartPlacement += secs => BeginInvoke(() =>
@@ -36,10 +35,8 @@ namespace BattleShips.Client
                 _model.PlacementSecondsLeft = secs;
                 var placedCount = _model.YourShips.Count(s => s.IsPlaced);
                 var totalCount = _model.YourShips.Count;
-                _lblStatus!.Text = $"Placement: drag ships from palette below ({placedCount}/{totalCount})";
-                UpdateCountdownLabel();
+                _model.CurrentStatus = $"Placement: drag ships from palette below ({placedCount}/{totalCount})";
                 _uiTimer!.Start();
-                Invalidate();
             });
 
             _controller.PlacementAck += count => BeginInvoke(() =>
@@ -47,35 +44,29 @@ namespace BattleShips.Client
                 _model.State = AppState.Waiting;
                 _uiTimer?.Stop();
                 _model.PlacementSecondsLeft = 0;
-                UpdateCountdownLabel();
-                _lblStatus!.Text = $"Placed {count} ships. Waiting for opponent...";
-                Invalidate();
+                _model.CurrentStatus = $"Placed {count} ships. Waiting for opponent...";
             });
 
             _controller.GameStarted += youStart => BeginInvoke(() =>
             {
                 _model.State = AppState.Playing;
                 _model.IsMyTurn = youStart;
-                _lblStatus!.Text = youStart ? "Your turn" : "Opponent's turn";
+                _model.CurrentStatus = youStart ? "Your turn" : "Opponent's turn";
                 _uiTimer?.Stop();
                 _model.PlacementSecondsLeft = 0;
-                UpdateCountdownLabel();
-                Invalidate();
             });
 
             _controller.YourTurn += () => BeginInvoke(() =>
             {
                 _awaitingMove = false;
                 _model.IsMyTurn = true;
-                _lblStatus!.Text = "Your turn";
-                Invalidate();
+                _model.CurrentStatus = "Your turn";
             });
 
             _controller.OpponentTurn += () => BeginInvoke(() =>
             {
                 _model.IsMyTurn = false;
-                _lblStatus!.Text = "Opponent's turn";
-                Invalidate();
+                _model.CurrentStatus = "Opponent's turn";
             });
 
             _controller.MoveResult += (col, row, hit, remaining) => BeginInvoke(() =>
@@ -83,16 +74,14 @@ namespace BattleShips.Client
                 _awaitingMove = false;
                 var p = new Point(col, row);
                 _model.ApplyMoveResult(p, hit);
-                _lblStatus!.Text = hit ? $"Hit! Opponent ships left: {remaining}" : $"Miss. Opponent ships left: {remaining}";
-                Invalidate();
+                _model.CurrentStatus = hit ? $"Hit! Opponent ships left: {remaining}" : $"Miss. Opponent ships left: {remaining}";
             });
 
             _controller.OpponentMoved += (col, row, hit) => BeginInvoke(() =>
             {
                 var p = new Point(col, row);
                 _model.ApplyOpponentMove(p, hit);
-                _lblStatus!.Text = hit ? "Opponent hit your ship!" : "Opponent missed.";
-                Invalidate();
+                _model.CurrentStatus = hit ? "Opponent hit your ship!" : "Opponent missed.";
             });
 
             _controller.OpponentHitByDisaster += (col, row) => BeginInvoke(() =>
@@ -113,8 +102,8 @@ namespace BattleShips.Client
                 MessageBox.Show(msg ?? "Opponent disconnected", "Server", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 ResetBoards();
                 _model.State = AppState.Menu;
+                _model.CurrentStatus = "Opponent disconnected";
                 InitStartupPanel();
-                _lblStatus!.Text = "Opponent disconnected";
                 _startupPanel!.Visible = true;
             });
 
@@ -123,8 +112,8 @@ namespace BattleShips.Client
                 _model.State = AppState.GameOver;
                 MessageBox.Show(msg ?? "Game over", "Game", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 ResetBoards();
+                _model.CurrentStatus = "Game over";
                 InitStartupPanel();
-                _lblStatus!.Text = "Game over";
                 _startupPanel!.Visible = true;
             });
 
@@ -134,10 +123,9 @@ namespace BattleShips.Client
                 ResetBoards();
                 _model.State = AppState.Menu;
                 // Show existing startup panel instead of creating a new one
-                _lblStatus!.Text = "Game cancelled";
+                _model.CurrentStatus = "Game cancelled";
                 _startupPanel!.Visible = true;
                 _btnConnectLocal!.Enabled = true;
-                Invalidate(); // Ensure UI repaints with the updated state
             });
 
             _controller.Error += msg => BeginInvoke(() =>
