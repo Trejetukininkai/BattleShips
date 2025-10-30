@@ -13,6 +13,7 @@ namespace BattleShips.Client
     {
         private readonly GameClientController _controller;
         private readonly GameModel _model = new GameModel();
+        private readonly SFXService _sfx;
         private readonly BoardRenderer _renderer = new BoardRenderer(cell: 40, margin: 80);
         private readonly ShipPaletteRenderer _paletteRenderer = new ShipPaletteRenderer(cell: 40, margin: 80);
 
@@ -58,10 +59,15 @@ namespace BattleShips.Client
             // Enable key events
             KeyPreview = true;
 
+            _sfx = new SFXService(_model);
+
             _uiTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _uiTimer.Tick += UiTimer_Tick;
 
             WireControllerEvents();
+
+            // Subscribe to model property changes for automatic UI updates
+            _model.PropertyChanged += OnModelPropertyChanged;
         }
 
         // ------------------------------
@@ -183,7 +189,7 @@ namespace BattleShips.Client
             _btnConnectLocal.Click += async (_, __) =>
             {
                 _btnConnectLocal.Enabled = false;
-                _lblStatus.Text = "🔄 Connecting to server...";
+                _model.CurrentStatus = "🔄 Connecting to server...";
                 try
                 {
                     await _controller.ConnectAsync("http://localhost:5000");
@@ -195,7 +201,7 @@ namespace BattleShips.Client
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Failed to connect: {ex.Message}", "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    _lblStatus.Text = "❌ Connection failed - Try again";
+                    _model.CurrentStatus = "❌ Connection failed - Try again";
                     _btnConnectLocal.Enabled = true;
                 }
             };
@@ -506,13 +512,11 @@ namespace BattleShips.Client
             if (_model.State == AppState.Placement && _model.PlacementSecondsLeft > 0)
             {
                 _model.PlacementSecondsLeft--;
-                UpdateCountdownLabel();
                 if (_model.PlacementSecondsLeft <= 0)
                 {
                     _model.State = AppState.Waiting;
-                    _lblStatus!.Text = "Placement time expired. Waiting for game to start...";
+                    _model.CurrentStatus = "Placement time expired. Waiting for game to start...";
                 }
-                Invalidate();
             }
         }
 
@@ -535,6 +539,32 @@ namespace BattleShips.Client
             }
 
             _lblCountdown.Text = "";
+        }
+
+        // PropertyChanged event handler for automatic UI updates
+        private void OnModelPropertyChanged(object? sender, BattleShips.Core.PropertyChangedEventArgs e)
+        {
+            switch (e.PropertyName)
+            {
+                case nameof(_model.CurrentStatus):
+                    if (_lblStatus != null)
+                    {
+                        _lblStatus.Text = _model.CurrentStatus;
+                        Invalidate();
+                    }
+                    break;
+                case nameof(_model.State):
+                case nameof(_model.IsMyTurn):
+                case nameof(_model.PlacementSecondsLeft):
+                case nameof(_model.DisasterCountdown):
+                    UpdateCountdownLabel();
+                    Invalidate();
+                    break;
+                case nameof(_model.IsDisasterAnimating):
+                case nameof(_model.CurrentDisasterName):
+                    Invalidate();
+                    break;
+            }
         }
 
         private void ResetBoards()
@@ -714,7 +744,8 @@ namespace BattleShips.Client
                 if (boardPos != null && _model.CanPlaceShip(_model.DraggedShip, boardPos.Value))
                 {
                     _model.PlaceShip(_model.DraggedShip, boardPos.Value);
-                    
+                    _sfx.PlayShipPlacedSound();
+
                     // Check if all ships are placed
                     var allPlaced = _model.YourShips.All(s => s.IsPlaced);
                     if (allPlaced && _controller.IsConnected)
@@ -726,8 +757,7 @@ namespace BattleShips.Client
                             _model.State = AppState.Waiting;
                             _uiTimer?.Stop();
                             _model.PlacementSecondsLeft = 0;
-                            UpdateCountdownLabel();
-                            _lblStatus!.Text = "Placement submitted. Waiting for opponent...";
+                            _model.CurrentStatus = "Placement submitted. Waiting for opponent...";
                         }
                         catch (Exception ex)
                         {
@@ -738,7 +768,7 @@ namespace BattleShips.Client
                     {
                         var placedCount = _model.YourShips.Count(s => s.IsPlaced);
                         var totalCount = _model.YourShips.Count;
-                        _lblStatus!.Text = $"Placement: place ships ({placedCount}/{totalCount})";
+                        _model.CurrentStatus = $"Placement: place ships ({placedCount}/{totalCount})";
                     }
                 }
                 
@@ -780,10 +810,9 @@ namespace BattleShips.Client
                     {
                         _awaitingMove = true;
                         _model.IsMyTurn = false;
-                        _lblStatus!.Text = "Move sent...";
+                        _model.CurrentStatus = "Move sent...";
                         await _controller.MakeMove(hitRight.Value.X, hitRight.Value.Y);
                         _model.YourFired.Add(hitRight.Value);
-                        Invalidate();
                     }
                     catch (Exception ex)
                     {
