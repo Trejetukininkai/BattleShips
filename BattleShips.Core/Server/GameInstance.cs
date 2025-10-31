@@ -1,4 +1,4 @@
-// --- internal simple Game model ---
+// --- Server side game instance ---
 using System.Drawing;
 
 namespace BattleShips.Core
@@ -30,6 +30,10 @@ namespace BattleShips.Core
         public int PlayerCount => (HasFirstPlayer ? 1 : 0) + (HasSecondPlayer ? 1 : 0);
         public bool HasFirstPlayer => PlayerA != null;
         public bool HasSecondPlayer => PlayerB != null;
+        private int TurnCount = 0;
+
+        public void IncrementTurnCount() => TurnCount++;
+        public int GetTurnCount() => TurnCount;
 
         public void RemovePlayer(string connId)
         {

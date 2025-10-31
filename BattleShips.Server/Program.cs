@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSignalR();
@@ -288,6 +289,9 @@ public class GameHub : Hub
     {
         var result = new MoveResult();
 
+        // Increment turn count on every move
+        g.IncrementTurnCount();
+
         if (!g.Started)
         {
             result.ErrorMessage = "Game not started";
@@ -364,8 +368,9 @@ public class GameHub : Hub
         }
 
         g.EventInProgress = true;
-        g.GameMode.SelectRandomEventGenerator();
-        g.GameMode.ResetEventGenerator();
+        g.GameMode.SelectEventBasedOnTurn(g.GetTurnCount());
+
+        if (affected.Count == 0) return null;
 
         return new DisasterResult
         {
@@ -406,7 +411,7 @@ public class GameHub : Hub
         }
 
         // Countdown
-        await BroadcastCountdown(g, result.Countdown);
+        await BroadcastCountdown(g, g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1);
     }
 
     private void CleanupGame(string gid, GameInstance g)
@@ -532,6 +537,8 @@ public class GameHub : Hub
             await Clients.Client(g.PlayerB).SendAsync("DisasterCountdown", countdown);
     }
 
+
+
     private async Task StartGameIfReady(GameInstance g)
     {
         Console.WriteLine($"[Server] StartGameIfReady called for game {g.Id}");
@@ -544,6 +551,10 @@ public class GameHub : Hub
         // choose starter (PlayerA)
         g.CurrentTurn = g.PlayerA;
         g.Started = true;
+
+        // Initialize event generator for turn count 0
+        if (g.GameMode != null)
+            g.GameMode.SelectEventBasedOnTurn(g.GetTurnCount());
 
         // inform both clients that game started and who begins
         await Clients.Client(g.PlayerA).SendAsync("GameStarted", g.CurrentTurn == g.PlayerA);

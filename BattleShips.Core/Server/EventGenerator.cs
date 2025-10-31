@@ -2,43 +2,71 @@ using System.Drawing;
 
 namespace BattleShips.Core
 {
-    public enum EventType
+    public abstract class EventGenerator : IEventGenerator
     {
-        Storm,
-        Tsunami,
-        Whirlpool,
-        MeteorStrike
-    }
-    public abstract class EventGenerator
-    {
-        private const int DisasterIntervalMin = 2;
-        private const int DisasterIntervalMax = 4;
-        private static readonly Random _rand = new();
-        private int DisasterCountdown = (int)_rand.NextInt64(DisasterIntervalMin, DisasterIntervalMax);
-        
+        private const int DisasterIntervalMin = 5;
+        private const int DisasterIntervalMax = 10;
+        protected static readonly Random _rand = new();
+        protected int DisasterCountdown { get; set; } = (int)_rand.NextInt64(DisasterIntervalMin, DisasterIntervalMax);
 
-        public int GetDisasterCountdown() => DisasterCountdown;
+
+        public virtual int GetDisasterCountdown() => DisasterCountdown;
         /// <summary>
-        /// Decrements the countdown. 
+        /// Decrements the countdown.
         /// </summary>
         /// <returns>Returns true if disaster should occur now.</returns>
-        public bool DecrementCountdown()
+        public virtual bool DecrementCountdown()
         {
             DisasterCountdown--;
             return DisasterCountdown <= 0;
         }
-        public void ResetCountdown()
+        public virtual void ResetCountdown()
         {
             DisasterCountdown = (int)_rand.NextInt64(DisasterIntervalMin, DisasterIntervalMax);
         }
-        public bool IsDisasterTime() => DisasterCountdown <= 0;
+        public virtual bool IsDisasterTime() => DisasterCountdown <= 0;
         public abstract List<Point> CauseDisaster(); // returns affected cells
         public abstract String? GetEventName();
-        protected Point SelectRandomCell(int boardSize = Board.Size) // TODO: use board size from GameMode, not Board.cs
+        public Point SelectRandomCell(int boardSize = Board.Size) // TODO: use board size from GameMode, not Board.cs
         {
             int x = _rand.Next(0, boardSize);
             int y = _rand.Next(0, boardSize);
             return new Point(x, y);
+        }
+
+        // Factory method to create decorated event generators based on turn count
+        public static IEventGenerator CreateDecoratedEventGenerator(EventType type, int turnCount = 0)
+        {
+            IEventGenerator baseGen = type switch
+            {
+                EventType.Storm => new StormGenerator(),
+                EventType.Tsunami => new TsunamiGenerator(),
+                EventType.Whirlpool => new WhirlpoolGenerator(),
+                EventType.MeteorStrike => new MeteorStrikeGenerator(),
+                _ => new StormGenerator()
+            };
+
+            // TEMP FOR TESTING: Apply all decorators to every disaster
+            // baseGen = new IntensityDecorator((EventGenerator)baseGen, Math.Max(1, turnCount / 10));
+            baseGen = new IntensityDecorator((EventGenerator)baseGen, Math.Max(1, turnCount));
+            baseGen = new NextCountdownDecorator((EventGenerator)baseGen);
+            // Comment out chain to avoid too many effects
+            // baseGen = new ChainDecorator((EventGenerator)baseGen, EventType.Storm);
+
+            // Original thresholds:
+            // if (turnCount >= 15)
+            // {
+            //     baseGen = new NextCountdownDecorator((EventGenerator)baseGen);
+            // }
+            // if (turnCount >= 30)
+            // {
+            //     baseGen = new IntensityDecorator((EventGenerator)baseGen, turnCount / 10);
+            // }
+            // if (turnCount >= 45)
+            // {
+            //     baseGen = new ChainDecorator((EventGenerator)baseGen, EventType.Storm);
+            // }
+            return baseGen;
         }
     }
 
@@ -47,8 +75,6 @@ namespace BattleShips.Core
         // Storm: randomly wipe 5 distinct spots on the board
         public override List<Point> CauseDisaster()
         {
-            if (!IsDisasterTime()) return new List<Point>();
-
             var picks = new HashSet<Point>();
             while (picks.Count < 5)
             {
@@ -57,7 +83,7 @@ namespace BattleShips.Core
             }
 
             var affected = picks.ToList();
-            
+
             return affected;
         }
         public override string? GetEventName() => EventType.Storm.ToString();
@@ -67,19 +93,15 @@ namespace BattleShips.Core
         // Tsunami affects an entire column randomly
         public override List<Point> CauseDisaster()
         {
-            if (IsDisasterTime())
-            {
-                var targetCell = SelectRandomCell();
+            var targetCell = SelectRandomCell();
 
-                // lambda that selects all cells in a given column (col) for a board of given size
-                Func<int, int, List<Point>> columnSelector = (col, size) =>
-                    Enumerable.Range(0, size).Select(row => new Point(col, row)).ToList();
+            // lambda that selects all cells in a given column (col) for a board of given size
+            Func<int, int, List<Point>> columnSelector = (col, size) =>
+                Enumerable.Range(0, size).Select(row => new Point(col, row)).ToList();
 
-                var affectedCells = columnSelector(targetCell.X, Board.Size);
+            var affectedCells = columnSelector(targetCell.X, Board.Size);
 
-                return affectedCells;
-            }
-            return new List<Point>();
+            return affectedCells;
         }
         public override string? GetEventName() => EventType.Tsunami.ToString();
     }
@@ -87,7 +109,6 @@ namespace BattleShips.Core
     {
         public override List<Point> CauseDisaster()
         {
-            if (!IsDisasterTime()) return new List<Point>();
 
             var center = SelectRandomCell();
             var cells = new List<Point>();
@@ -152,8 +173,6 @@ namespace BattleShips.Core
     {
         public override List<Point> CauseDisaster()
         {
-            if (!IsDisasterTime()) return new List<Point>();
-
             var center = SelectRandomCell();
             var affected = new List<Point>();
 
