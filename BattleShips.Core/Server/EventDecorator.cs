@@ -37,7 +37,6 @@ namespace BattleShips.Core
         {
             // Get base disaster effect
             var affected = _wrapped.CauseDisaster();
-            if (!IsDisasterTime()) return affected;
 
             string? eventName = GetEventName();
             if (eventName?.Contains(EventType.Storm.ToString()) == true)

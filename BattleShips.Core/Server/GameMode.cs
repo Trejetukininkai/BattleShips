@@ -108,22 +108,6 @@ namespace BattleShips.Core
             EventGenerator.ResetCountdown();
         }
 
-        // // For testing
-        // public void SelectEventBasedOnTurn(int turnCount)
-        // {
-        //     var eventTypes = Enum.GetValues(typeof(EventType));
-        //     var randomEventType = (EventType)eventTypes.GetValue(_rand.Next(eventTypes.Length))!;
-
-        //     DecoratorType decorators = DecoratorType.None;
-        //     int intensity = 3;
-        //     decorators |= DecoratorType.Intensity;
-        //     EventGenerator = Core.EventGenerator.CreateDecoratedEventGenerator(
-        //             EventType.Whirlpool,
-        //             intensity,
-        //             decorators);
-        //     EventGenerator.ResetCountdown();
-        // }
-
         // Original method for compatibility, but deprecated
         public void SelectRandomEventGenerator()
         {
