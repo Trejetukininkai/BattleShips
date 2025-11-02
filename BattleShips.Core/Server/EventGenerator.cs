@@ -34,8 +34,14 @@ namespace BattleShips.Core
             return new Point(x, y);
         }
 
-        // Factory method to create decorated event generators based on turn count
-        public static IEventGenerator CreateDecoratedEventGenerator(EventType type, int turnCount = 0)
+        // Factory method to create decorated event generators based on intensity
+        public static IEventGenerator CreateDecoratedEventGenerator(EventType type, int intensity = 1)
+        {
+            return CreateDecoratedEventGenerator(type, intensity, DecoratorType.All);
+        }
+
+        // Factory method with decorator control for testing
+        public static IEventGenerator CreateDecoratedEventGenerator(EventType type, int intensity, DecoratorType decorators)
         {
             IEventGenerator baseGen = type switch
             {
@@ -46,27 +52,51 @@ namespace BattleShips.Core
                 _ => new StormGenerator()
             };
 
-            // TEMP FOR TESTING: Apply all decorators to every disaster
-            // baseGen = new IntensityDecorator((EventGenerator)baseGen, Math.Max(1, turnCount / 10));
-            baseGen = new IntensityDecorator((EventGenerator)baseGen, Math.Max(1, turnCount));
-            baseGen = new NextCountdownDecorator((EventGenerator)baseGen);
-            // Comment out chain to avoid too many effects
-            // baseGen = new ChainDecorator((EventGenerator)baseGen, EventType.Storm);
+            // Apply decorators based on flags
+            if ((decorators & DecoratorType.Intensity) != 0)
+            {
+                baseGen = new IntensityDecorator(baseGen, intensity);
+            }
 
-            // Original thresholds:
-            // if (turnCount >= 15)
-            // {
-            //     baseGen = new NextCountdownDecorator((EventGenerator)baseGen);
-            // }
-            // if (turnCount >= 30)
-            // {
-            //     baseGen = new IntensityDecorator((EventGenerator)baseGen, turnCount / 10);
-            // }
-            // if (turnCount >= 45)
-            // {
-            //     baseGen = new ChainDecorator((EventGenerator)baseGen, EventType.Storm);
-            // }
+            if ((decorators & DecoratorType.Accelerated) != 0)
+            {
+                baseGen = new NextCountdownDecorator(baseGen);
+            }
+
+            if ((decorators & DecoratorType.Chain) != 0)
+            {
+                baseGen = new ChainDecorator(baseGen, EventType.Storm);
+            }
+
             return baseGen;
+        }
+
+        // Test methods for different decorator combinations
+        public static IEventGenerator CreateIntensifiedOnly(EventType type, int intensityLevel = 3)
+        {
+            return CreateDecoratedEventGenerator(type, intensityLevel, DecoratorType.Intensity);
+        }
+
+        public static IEventGenerator CreateAcceleratedOnly(EventType type)
+        {
+            return CreateDecoratedEventGenerator(type, 0, DecoratorType.Accelerated);
+        }
+
+        public static IEventGenerator CreateChainOnly(EventType type, EventType chainType)
+        {
+            var baseGen = CreateDecoratedEventGenerator(type, 0, DecoratorType.Chain);
+            // Replace the default Storm chain with the specified type
+            if (baseGen is ChainDecorator chainDecorator)
+            {
+                // This is a simplified approach - in practice you might want to recreate
+                // For testing purposes, we'll use the default Storm chain
+            }
+            return baseGen;
+        }
+
+        public static IEventGenerator CreateBaseEvent(EventType type)
+        {
+            return CreateDecoratedEventGenerator(type, 0, DecoratorType.None);
         }
     }
 

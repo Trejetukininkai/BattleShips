@@ -4,131 +4,178 @@ using System.Drawing;
 namespace BattleShips.Core
 {
     // Decorator pattern implementation
-    public abstract class EventDecorator : EventGenerator
+    public abstract class EventDecorator : IEventGenerator
     {
-        protected EventGenerator _wrapped;
+        protected IEventGenerator _wrapped;
 
-        protected EventDecorator(EventGenerator wrapped)
+        protected EventDecorator(IEventGenerator wrapped)
         {
             _wrapped = wrapped;
         }
 
-        // Delegate countdown-related methods to wrapped generator
-        public override int GetDisasterCountdown() => _wrapped.GetDisasterCountdown();
-        public override bool DecrementCountdown() => _wrapped.DecrementCountdown();
-        public override void ResetCountdown() => _wrapped.ResetCountdown();
-        public override bool IsDisasterTime() => _wrapped.IsDisasterTime();
-
-        public override string? GetEventName() => _wrapped.GetEventName();
-
-        // Protected helper to access wrapped's random selection
-        protected Point SelectRandomCellWrapped() => _wrapped.SelectRandomCell();
+        // Delegate all methods to wrapped generator
+        public virtual int GetDisasterCountdown() => _wrapped.GetDisasterCountdown();
+        public virtual bool DecrementCountdown() => _wrapped.DecrementCountdown();
+        public virtual void ResetCountdown() => _wrapped.ResetCountdown();
+        public virtual bool IsDisasterTime() => _wrapped.IsDisasterTime();
+        public virtual List<Point> CauseDisaster() => _wrapped.CauseDisaster();
+        public virtual string? GetEventName() => _wrapped.GetEventName();
+        public virtual Point SelectRandomCell(int boardSize = Board.Size) => _wrapped.SelectRandomCell(boardSize);
     }
 
     // Intensity Decorator: Increases disaster intensity by scaling effects based on intensity level
     public class IntensityDecorator : EventDecorator
     {
-        private readonly int _intensityLevel;
+        public int IntensityLevel { get; set; }
 
-        public IntensityDecorator(EventGenerator wrapped, int intensityLevel = 1) : base(wrapped)
+        public IntensityDecorator(IEventGenerator wrapped, int intensityLevel = 1) : base(wrapped)
         {
-            _intensityLevel = Math.Max(3, intensityLevel); // For testing, ensure at least 3
+            IntensityLevel = Math.Max(1, intensityLevel);
         }
 
         public override List<Point> CauseDisaster()
         {
+            // Get base disaster effect
             var affected = _wrapped.CauseDisaster();
-            if (_wrapped.IsDisasterTime())
+            if (!IsDisasterTime()) return affected;
+
+            string? eventName = GetEventName();
+            if (eventName?.Contains(EventType.Storm.ToString()) == true)
             {
-                string? eventName = _wrapped.GetEventName();
-                if (eventName?.Contains(EventType.Storm.ToString()) == true)
+                // Add additional random spots based on intensity
+                int additionalSpots = (IntensityLevel - 1) * 3;
+                for (int i = 0; i < additionalSpots; i++)
                 {
-                    // Increase the number of spots significantly
-                    int additionalSpots = _intensityLevel * 2; // More spots
-                    for (int i = 0; i < additionalSpots; i++)
+                    Point p;
+                    int attempts = 0;
+                    do
                     {
-                        Point p;
-                        do
-                        {
-                            p = SelectRandomCell();
-                        } while (affected.Contains(p));
+                        p = SelectRandomCell();
+                        attempts++;
+                    } while (affected.Contains(p) && attempts < 100);
+                    if (!affected.Contains(p))
                         affected.Add(p);
-                    }
                 }
-                else if (eventName?.Contains(EventType.Tsunami.ToString()) == true)
+            }
+            else if (eventName?.Contains(EventType.Tsunami.ToString()) == true)
+            {
+                // Add additional columns: intensity 2 = 2 total, intensity 3 = 3 total
+                if (affected.Count > 0)
                 {
-                    // Affect more columns, but max total 3 columns
-                    Point approximateCenter = affected[affected.Count / 2]; // Approximate the original column
-                    int radius = Math.Min(_intensityLevel, 1); // Max radius 1 to limit to 3 total columns
-                    for (int dx = -radius; dx <= radius; dx++)
+                    Point center = affected[affected.Count / 2];
+                    int additionalColumns = Math.Max(0, IntensityLevel - 1); // 0,1,2
+                    for (int i = 1; i <= additionalColumns; i++)
                     {
-                        int col = approximateCenter.X + dx;
-                        if (col >= 0 && col < Board.Size)
+                        // Add columns to the left and right
+                        int leftCol = center.X - i;
+                        int rightCol = center.X + i;
+                        if (leftCol >= 0)
                         {
                             for (int row = 0; row < Board.Size; row++)
                             {
-                                Point p = new Point(col, row);
+                                Point p = new Point(leftCol, row);
+                                if (!affected.Contains(p)) affected.Add(p);
+                            }
+                        }
+                        if (rightCol < Board.Size && i >= 2)
+                        {
+                            for (int row = 0; row < Board.Size; row++)
+                            {
+                                Point p = new Point(rightCol, row);
                                 if (!affected.Contains(p)) affected.Add(p);
                             }
                         }
                     }
                 }
-                else if (eventName?.Contains(EventType.Whirlpool.ToString()) == true)
+            }
+            else if (eventName?.Contains(EventType.Whirlpool.ToString()) == true)
+            {
+                if (affected.Count > 0)
                 {
-                    // Much larger effective area for testing
-                    if (affected.Count > 0)
+                    int avgX = (int)Math.Round(affected.Average(p => p.X));
+                    int avgY = (int)Math.Round(affected.Average(p => p.Y));
+                    Point center = new Point(avgX, avgY);
+                    var newCells = new HashSet<Point>(affected);
+
+                    // Determine radius for X shape
+                    // Intensity 1 -> radius 1 (3x3)
+                    // Intensity 2 -> radius 2 (5x5)
+                    // Intensity 3 -> radius 3 (7x7)
+                    int radius = IntensityLevel;
+
+                    for (int dy = -radius; dy <= radius; dy++)
                     {
-                        Point center = affected[affected.Count / 2];
-                        int radius = _intensityLevel * 4; // Even larger radius to show effect
                         for (int dx = -radius; dx <= radius; dx++)
                         {
-                            for (int dy = -radius; dy <= radius; dy++)
-                            {
-                                int x = center.X + dx;
-                                int y = center.Y + dy;
-                                if (x >= 0 && x < Board.Size && y >= 0 && y < Board.Size)
-                                {
-                                    Point p = new Point(x, y);
-                                    if (!affected.Contains(p)) affected.Add(p);
-                                }
-                            }
+                            int x = center.X + dx;
+                            int y = center.Y + dy;
+
+                            if (x < 0 || y < 0 || x >= Board.Size || y >= Board.Size)
+                                continue;
+
+                            // X-pattern condition: only cells on the diagonals
+                            if (Math.Abs(dx) == Math.Abs(dy))
+                                newCells.Add(new Point(x, y));
                         }
                     }
-                }
-                else if (eventName?.Contains("Meteor Strike") == true)
-                {
-                    // Much larger AOE for testing
-                    if (affected.Count > 0)
-                    {
-                        Point center = affected[4]; // Center of the 3x3
-                        int radius = _intensityLevel * 2; // Larger radius to make it more dramatic
-                        for (int dx = -radius; dx <= radius; dx++)
-                        {
-                            for (int dy = -radius; dy <= radius; dy++)
-                            {
-                                int x = center.X + dx;
-                                int y = center.Y + dy;
-                                if (x >= 0 && x < Board.Size && y >= 0 && y < Board.Size)
-                                    if (!affected.Contains(new Point(x, y))) affected.Add(new Point(x, y));
-                            }
-                        }
-                    }
+
+                    affected = newCells.ToList();
                 }
             }
+            else if (eventName?.Contains("Meteor Strike") == true)
+            {
+                if (affected.Count > 0)
+                {
+                    int avgX = (int)Math.Round(affected.Average(p => p.X));
+                    int avgY = (int)Math.Round(affected.Average(p => p.Y));
+                    Point center = new Point(avgX, avgY);
+                    var newCells = new HashSet<Point>(affected);
+
+                    // Determine size: 3x3, 4x4, 5x5
+                    int size = IntensityLevel switch
+                    {
+                        1 => 3,
+                        2 => 4,
+                        _ => 5
+                    };
+
+                    // Calculate half-size for centering
+                    // For even sizes (like 4x4), shift one direction to keep shape balanced
+                    int half = size / 2;
+
+                    for (int dy = -half; dy <= half; dy++)
+                    {
+                        for (int dx = -half; dx <= half; dx++)
+                        {
+                            // For even sizes (4x4), offset slightly so it's centered
+                            int x = center.X + dx + (size % 2 == 0 && dx < 0 ? 1 : 0);
+                            int y = center.Y + dy + (size % 2 == 0 && dy < 0 ? 1 : 0);
+
+                            if (x < 0 || y < 0 || x >= Board.Size || y >= Board.Size)
+                                continue;
+
+                            newCells.Add(new Point(x, y));
+                        }
+                    }
+
+                    affected = newCells.ToList();
+                }
+            }
+
             return affected;
         }
 
-        public override string? GetEventName() => $"Intensified {_wrapped.GetEventName()}";
+        public override string? GetEventName() => $"Intensified {IntensityLevel} {_wrapped.GetEventName()}";
     }
 
     // Chain Decorator: Causes a secondary disaster effect
     public class ChainDecorator : EventDecorator
     {
-        private readonly EventType _chainType;
+        public EventType ChainType { get; set; }
 
-        public ChainDecorator(EventGenerator wrapped, EventType chainType) : base(wrapped)
+        public ChainDecorator(IEventGenerator wrapped, EventType chainType) : base(wrapped)
         {
-            _chainType = chainType;
+            ChainType = chainType;
         }
 
         public override List<Point> CauseDisaster()
@@ -136,7 +183,7 @@ namespace BattleShips.Core
             var affected = _wrapped.CauseDisaster();
             if (_wrapped.IsDisasterTime())
             {
-                EventGenerator chainGenerator = _chainType switch
+                EventGenerator chainGenerator = ChainType switch
                 {
                     EventType.Storm => new StormGenerator(),
                     EventType.Tsunami => new TsunamiGenerator(),
@@ -154,7 +201,7 @@ namespace BattleShips.Core
             return affected;
         }
 
-        public override string? GetEventName() => $"Chain {_wrapped.GetEventName()}";
+        public override string? GetEventName() => $"{_wrapped.GetEventName()} Chained with {ChainType}";
     }
 
     // NextCountdown Decorator: Reduces countdown interval for more frequent disasters
@@ -162,23 +209,28 @@ namespace BattleShips.Core
     {
         private const int FasterDisasterIntervalMin = 1;
         private const int FasterDisasterIntervalMax = 3;
+        private int _localCountdown;
+        private static readonly Random _rand = new();
 
-        public NextCountdownDecorator(EventGenerator wrapped) : base(wrapped) { }
+        public NextCountdownDecorator(IEventGenerator wrapped) : base(wrapped)
+        {
+            ResetCountdown();
+        }
 
         public override void ResetCountdown()
         {
-            DisasterCountdown = (int)_rand.NextInt64(FasterDisasterIntervalMin, FasterDisasterIntervalMax);
+            _localCountdown = (int)_rand.NextInt64(FasterDisasterIntervalMin, FasterDisasterIntervalMax);
         }
 
-        public override int GetDisasterCountdown() => DisasterCountdown;
+        public override int GetDisasterCountdown() => _localCountdown;
 
         public override bool DecrementCountdown()
         {
-            DisasterCountdown--;
-            return DisasterCountdown <= 0;
+            _localCountdown--;
+            return _localCountdown <= 0;
         }
 
-        public override bool IsDisasterTime() => DisasterCountdown <= 0;
+        public override bool IsDisasterTime() => _localCountdown <= 0;
 
         public override List<Point> CauseDisaster() => _wrapped.CauseDisaster();
 

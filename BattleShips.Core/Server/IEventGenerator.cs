@@ -9,6 +9,18 @@ namespace BattleShips.Core
         Whirlpool,
         MeteorStrike
     }
+
+    // Enum to control which decorators to apply
+    [Flags]
+    public enum DecoratorType
+    {
+        None = 0,
+        Intensity = 1,
+        Accelerated = 2,
+        Chain = 4,
+        All = Intensity | Accelerated | Chain
+    }
+        
     public interface IEventGenerator
     {
         int GetDisasterCountdown();
