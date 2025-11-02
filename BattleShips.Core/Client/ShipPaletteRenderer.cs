@@ -119,7 +119,7 @@ namespace BattleShips.Core
             }
         }
 
-        public Ship? HitTestShip(Point mouse, GameModel model, int windowWidth, int boardHeight)
+        public IShip? HitTestShip(Point mouse, GameModel model, int windowWidth, int boardHeight)
         {
             var paletteRect = GetPaletteRect(windowWidth, boardHeight);
             if (!paletteRect.Contains(mouse)) return null;
