@@ -12,7 +12,6 @@ namespace BattleShips.Core
         public IEventGenerator? EventGenerator;
 
     private Random _rand = new();
-    private bool TempAccelerateNext = false;
 
     public GameMode(int shipCount, int boardX, int boardY)
     {

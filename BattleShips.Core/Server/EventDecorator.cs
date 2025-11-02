@@ -164,7 +164,7 @@ namespace BattleShips.Core
             return affected;
         }
 
-        public override string? GetEventName() => $"Intensified {IntensityLevel} {_wrapped.GetEventName()}";
+        public override string? GetEventName() => $"Intensified {_wrapped.GetEventName()}";
     }
 
     // Chain Decorator: Causes a secondary disaster effect
