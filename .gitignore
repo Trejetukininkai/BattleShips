@@ -1,7 +1,7 @@
 # Visual Studio
 .vs/
 *.vsidx
-
+.vscode/
 # Build outputs
 **/obj/
 **/bin/
