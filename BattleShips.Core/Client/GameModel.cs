@@ -9,7 +9,7 @@ namespace BattleShips.Core
     // Observable for client side UI
     public class GameModel : INotifyPropertyChanged
     {
-        public List<Ship> YourShips { get; } = new();
+        public List<IShip> YourShips { get; } = new();
         public HashSet<Point> YourHitsByOpponent { get; } = new();
         public HashSet<Point> YourFired { get; } = new();
         public HashSet<Point> YourFiredHits { get; } = new();
@@ -129,7 +129,7 @@ namespace BattleShips.Core
         }
 
         // Drag and drop state
-        public Ship? DraggedShip { get; set; }
+        public IShip? DraggedShip { get; set; }
         public Point DragOffset { get; set; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -151,7 +151,7 @@ namespace BattleShips.Core
             State = AppState.Menu;
         }
 
-        public bool CanPlaceShip(Ship ship, Point position)
+        public bool CanPlaceShip(IShip ship, Point position)
         {
             ship.Position = position;
 
@@ -173,7 +173,7 @@ namespace BattleShips.Core
             return true;
         }
 
-        public void PlaceShip(Ship ship, Point position)
+        public void PlaceShip(IShip ship, Point position)
         {
             if (CanPlaceShip(ship, position))
             {
@@ -182,7 +182,7 @@ namespace BattleShips.Core
             }
         }
 
-        public void RemoveShip(Ship ship)
+        public void RemoveShip(IShip ship)
         {
             ship.IsPlaced = false;
             ship.Position = Point.Empty;
