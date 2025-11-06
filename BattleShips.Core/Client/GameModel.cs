@@ -15,6 +15,9 @@ namespace BattleShips.Core
         public HashSet<Point> YourFiredHits { get; } = new();
         public HashSet<Point> AnimatedCells { get; } = new();
 
+        // for command design patterns - undoing
+        private readonly Stack<ICommand> _placementHistory = new();
+
         // UI state properties with change notifications
         private string _currentStatus = "Ready to start your naval adventure";
         private AppState _state = AppState.Menu;
@@ -149,7 +152,17 @@ namespace BattleShips.Core
             DraggedShip = null;
             DragOffset = Point.Empty;
             State = AppState.Menu;
+            _placementHistory.Clear();
         }
+        public void UndoLastShipPlacement()
+        {
+            if (_placementHistory.Count == 0)
+                return;
+
+            var lastCommand = _placementHistory.Pop();
+            lastCommand.Undo();
+        }
+
 
         public bool CanPlaceShip(IShip ship, Point position)
         {
@@ -175,11 +188,9 @@ namespace BattleShips.Core
 
         public void PlaceShip(IShip ship, Point position)
         {
-            if (CanPlaceShip(ship, position))
-            {
-                ship.Position = position;
-                ship.IsPlaced = true;
-            }
+            var command = new PlaceShipCommand(this, ship, position);
+            command.Execute();
+            _placementHistory.Push(command);
         }
 
         public void RemoveShip(IShip ship)
@@ -221,7 +232,7 @@ namespace BattleShips.Core
             YourFiredHits.Add(p);
         }
 
-        protected virtual void OnModelPropertyChanged(string propertyName)
+        public virtual void OnModelPropertyChanged(string propertyName)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }

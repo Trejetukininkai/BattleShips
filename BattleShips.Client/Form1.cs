@@ -691,7 +691,15 @@ namespace BattleShips.Client
         private void OnMouseDown(object? sender, MouseEventArgs e)
         {
             if (_model.State != AppState.Placement) return;
-            
+
+            // --- Undo button click detection ---
+            if (_renderer.UndoButtonRect.Contains(e.Location))
+            {
+                _model.UndoLastShipPlacement();
+                Invalidate(); // Redraw board after undo
+                return; // Stop other click handling
+            }
+
             var mouse = new Point(e.X, e.Y);
             
             // Check if clicking on ship palette

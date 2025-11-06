@@ -5,6 +5,7 @@ using System.Linq;
 
 namespace BattleShips.Core
 {
+    // --- Server side game instance ---
     public class GameInstance
     {
         public string Id { get; }
@@ -92,7 +93,7 @@ namespace BattleShips.Core
                     ? ShipOrientation.Horizontal
                     : ShipOrientation.Vertical;
 
-                
+                // Create a generic Blocky ship
                 IShip ship = new BlockyClass().CreateDestroyer(length, ships.Count);
                 ship.Position = cell;
                 ship.IsPlaced = true;
