@@ -226,7 +226,7 @@ namespace BattleShips.Core
 
         public static List<IShip> CreateStandardFleet()
         {
-            // Randomly pick a style: 0 = Blocky, 1 = Curvy
+            // 🎲 Randomly pick a style: 0 = Blocky, 1 = Curvy
             var rng = new Random();
             ShipClass randomClass = rng.Next(2) == 0 ? ShipClass.Blocky : ShipClass.Curvy;
 

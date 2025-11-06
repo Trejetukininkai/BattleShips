@@ -1,7 +1,8 @@
+using BattleShips.Core; // for Board.Size
 using System;
 using System.Drawing;
+using System.Drawing.Printing;
 using System.Runtime.Versioning;
-using BattleShips.Core; // for Board.Size
 using System.Windows.Forms;
 
 namespace BattleShips.Core
@@ -17,6 +18,9 @@ namespace BattleShips.Core
             Margin = margin;
             TitleOffset = (int)(Margin / 2);
         }
+
+        private Rectangle undoButtonRect;
+        public Rectangle UndoButtonRect => undoButtonRect;
 
         public Rectangle GetLeftBoardRect() => new Rectangle(Margin, Margin + TitleOffset, Board.Size * Cell, Board.Size * Cell);
         public Rectangle GetRightBoardRect() => new Rectangle(Margin * 2 + Board.Size * Cell, Margin + TitleOffset, Board.Size * Cell, Board.Size * Cell);
@@ -299,6 +303,32 @@ namespace BattleShips.Core
                         }
                     }
                 }
+            }
+
+            //UNDO BUTTON
+
+            int buttonWidth = 100;
+            int buttonHeight = 30;
+            int spacing = 20;
+
+            undoButtonRect = new Rectangle(
+                450,
+                50,
+                buttonWidth,
+                buttonHeight
+            );
+
+            using (var buttonBrush = new SolidBrush(Color.FromArgb(60, 80, 100)))
+            using (var borderPen = new Pen(Color.FromArgb(100, 150, 200), 2))
+            using (var textBrush = new SolidBrush(Color.White))
+            using (var buttonFont = new Font(font.FontFamily, 10, FontStyle.Bold))
+            {
+                g.FillRectangle(buttonBrush, undoButtonRect);
+                g.DrawRectangle(borderPen, undoButtonRect);
+                var textSize = g.MeasureString("Undo", buttonFont);
+                g.DrawString("Undo", buttonFont, textBrush,
+                    undoButtonRect.X + (buttonWidth - textSize.Width) / 2,
+                    undoButtonRect.Y + (buttonHeight - textSize.Height) / 2);
             }
 
             // status & countdown
