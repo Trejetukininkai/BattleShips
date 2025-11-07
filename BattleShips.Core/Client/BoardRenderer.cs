@@ -7,12 +7,29 @@ using System.Runtime.Versioning;
 
 namespace BattleShips.Core
 {
+    public interface IBoardRendererBuilder
+    {
+        void Reset();
+        void SetColors();
+        void SetMargins();
+        void SetCellSize();
+        BoardRenderer GetResult();
+    }
 
     public class BoardRenderer
     {
         public int Cell { get; }
         public int Margin { get; }
         public int TitleOffset { get; } = 40; // set default
+
+        // Theme properties
+        public Color BackgroundColor { get; private set; }
+        public Color BoardBackgroundColor { get; private set; }
+        public Color GridLineColor { get; private set; }
+        public Color GridBorderColor { get; private set; } 
+        public Color LabelColor { get; private set; }
+        public Color ShipColor { get; private set; }
+        public Color MineColor { get; private set; }
 
 
         public BoardRenderer(int cell = 40, int margin = 80)
@@ -30,6 +47,45 @@ namespace BattleShips.Core
             {
                 mineOptionRects.Add(new Rectangle(startX, startY + i * (optionHeight + 10), optionWidth, optionHeight));
             }
+
+            SetDarkTheme(); // Default to dark theme
+        }
+
+        public BoardRenderer(int cell, int margin, string theme)
+        {
+            Cell = cell;
+            Margin = margin;
+
+            if (theme.ToLower() == "light")
+                SetLightTheme();
+            else
+                SetDarkTheme();
+        }
+
+        private void SetDarkTheme()
+        {
+            BackgroundColor = Color.FromArgb(15, 20, 30);
+            BoardBackgroundColor = Color.FromArgb(25, 35, 50);
+            GridLineColor = Color.FromArgb(60, 80, 100);      
+            GridBorderColor = Color.FromArgb(100, 150, 200);  
+            GridLineColor = Color.FromArgb(60, 80, 100);
+            LabelColor = Color.FromArgb(200, 220, 240);
+            ShipColor = Color.FromArgb(180, 46, 204, 113);
+            MineColor = Color.FromArgb(180, 200, 200, 0);
+            Console.WriteLine("[BoardRenderer] Dark theme applied");
+        }
+
+        private void SetLightTheme()
+        {
+            BackgroundColor = Color.FromArgb(240, 240, 245);
+            BoardBackgroundColor = Color.FromArgb(220, 230, 240);
+            GridLineColor = Color.FromArgb(180, 190, 200);    
+            GridBorderColor = Color.FromArgb(120, 140, 180);
+            GridLineColor = Color.FromArgb(180, 190, 200);
+            LabelColor = Color.FromArgb(40, 40, 60);
+            ShipColor = Color.FromArgb(180, 30, 130, 80);
+            MineColor = Color.FromArgb(180, 180, 160, 0);
+            Console.WriteLine("[BoardRenderer] Light theme applied");
         }
 
         private Rectangle undoButtonRect;
@@ -94,10 +150,10 @@ namespace BattleShips.Core
 
         private void DrawBase(Rectangle origin, Graphics g)
         {
-            using var labelBrush = new SolidBrush(Color.FromArgb(200, 220, 240));
-            using var thinBrush = new SolidBrush(Color.FromArgb(60, 80, 100));
-            using var thickBrush = new SolidBrush(Color.FromArgb(100, 150, 200));
-            using var baseBrush = new SolidBrush(Color.FromArgb(25, 35, 50));
+            using var labelBrush = new SolidBrush(LabelColor);
+            using var thinBrush = new SolidBrush(GridLineColor);
+            using var thickBrush = new SolidBrush(GridBorderColor); // Keep this for borders
+            using var baseBrush = new SolidBrush(BoardBackgroundColor);
 
             // labels
             for (int c = 0; c < Board.Size; c++)
@@ -134,7 +190,7 @@ namespace BattleShips.Core
         private void DrawBoardTitles(Graphics g, Rectangle left, Rectangle right, Font font)
         {
             using var titleFont = new Font(font.FontFamily, Math.Max(10, font.Size + 2), FontStyle.Bold);
-            using var labelBrush = new SolidBrush(Color.FromArgb(200, 220, 240));
+            using var labelBrush = new SolidBrush(LabelColor); // ✅ Use theme label color
 
             string leftTitle = "Your Board";
             string rightTitle = "Opponent";
@@ -155,6 +211,7 @@ namespace BattleShips.Core
             g.DrawString(leftTitle, titleFont, labelBrush, leftX, titleY);
             g.DrawString(rightTitle, titleFont, labelBrush, rightX, titleY);
         }
+
 
         private void DrawMineChooser(Graphics g, Font font, GameModel model)
         {
@@ -183,8 +240,8 @@ namespace BattleShips.Core
 
         private void DrawShips(Graphics g, GameModel model, Rectangle boardRect)
         {
-            using var shipBrush = new SolidBrush(Color.FromArgb(180, 46, 204, 113));
-            using var shipBorderBrush = new SolidBrush(Color.FromArgb(200, 39, 174, 96));
+            using var shipBrush = new SolidBrush(ShipColor);
+            using var shipBorderBrush = new SolidBrush(Color.FromArgb(200, 39, 174, 96)); // Keep ship border consistent
 
             foreach (var ship in model.YourShips.Where(s => s.IsPlaced))
             {
@@ -300,11 +357,12 @@ namespace BattleShips.Core
 
         private void DrawMines(Graphics g, GameModel model, Rectangle boardRect)
         {
+            using var brush = new SolidBrush(MineColor);
+
             foreach (var mine in model.YourMines)
             {
                 var x = boardRect.X + mine.Position.X * Cell;
                 var y = boardRect.Y + mine.Position.Y * Cell;
-                using var brush = new SolidBrush(Color.FromArgb(180, 200, 200, 0));
                 g.FillEllipse(brush, x + 10, y + 10, Cell - 20, Cell - 20);
             }
         }
@@ -350,8 +408,104 @@ namespace BattleShips.Core
             return null;
         }
 
+        public class DarkThemeBuilder : IBoardRendererBuilder
+        {
+            private BoardRenderer _renderer;
 
+            public DarkThemeBuilder()
+            {
+                Reset();
+            }
 
+            public void Reset()
+            {
+                _renderer = new BoardRenderer();
+            }
 
+            public void SetColors()
+            {
+                Console.WriteLine("[Builder] Applying dark theme colors");
+                _renderer = new BoardRenderer(cell: 40, margin: 80, theme: "dark");
+            }
+
+            public void SetMargins()
+            {
+                Console.WriteLine("[Builder] Setting dark theme margins");
+            }
+
+            public void SetCellSize()
+            {
+                Console.WriteLine("[Builder] Setting dark theme cell size");
+            }
+
+            public BoardRenderer GetResult()
+            {
+                var result = _renderer;
+                Reset();
+                return result;
+            }
+        }
+
+        public class LightThemeBuilder : IBoardRendererBuilder
+        {
+            private BoardRenderer _renderer;
+
+            public LightThemeBuilder()
+            {
+                Reset();
+            }
+
+            public void Reset()
+            {
+                _renderer = new BoardRenderer();
+            }
+            public void SetColors()
+            {
+                Console.WriteLine("[Builder] Applying light theme colors");
+                _renderer = new BoardRenderer(cell: 40, margin: 80, theme: "light");
+            }
+
+            public void SetMargins()
+            {
+                Console.WriteLine("[Builder] Setting light theme margins");
+            }
+
+            public void SetCellSize()
+            {
+                Console.WriteLine("[Builder] Setting light theme cell size");
+            }
+
+            public BoardRenderer GetResult()
+            {
+                var result = _renderer;
+                Reset();
+                return result;
+            }
+        }
+
+        // Director class that constructs BoardRenderers
+        public class BoardRendererDirector
+        {
+            private readonly Random _random = new Random();
+
+            public BoardRenderer Construct(IBoardRendererBuilder builder)
+            {
+                builder.Reset();
+                builder.SetColors();
+                builder.SetMargins();
+                builder.SetCellSize();
+                return builder.GetResult();
+            }
+
+            // Randomly choose a theme for a player
+            public BoardRenderer ConstructRandomTheme()
+            {
+                var useDarkTheme = _random.Next(2) == 0; // 50% chance for dark/light
+                IBoardRendererBuilder builder = useDarkTheme ? new DarkThemeBuilder() : new LightThemeBuilder();
+
+                Console.WriteLine($"[Director] Creating {(useDarkTheme ? "Dark" : "Light")} theme BoardRenderer");
+                return Construct(builder);
+            }
+        }
     }
 }
