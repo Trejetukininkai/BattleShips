@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
@@ -25,8 +25,41 @@ namespace BattleShips.Core
         public GameMode? GameMode { get; set; }
         public bool ShouldCancelOnNextAction { get; set; } = false;
         public bool EventInProgress { get; set; } = false;
+        public bool ShipsReadyA { get; set; }
+        public bool ShipsReadyB { get; set; }
+
+        public bool AllShipsPlaced => ShipsReadyA && ShipsReadyB;
+        public bool AllMinesPlaced => MinesReadyA && MinesReadyB;
+
+
 
         private int TurnCount = 0;
+
+
+        public List<NavalMine> MinesA { get; set; } = new();
+        public List<NavalMine> MinesB { get; set; } = new();
+
+        public bool MinesReadyA { get; set; } = false;
+        public bool MinesReadyB { get; set; } = false;
+
+
+        public void SetPlayerMines(string connId, List<NavalMine> mines)
+        {
+            if (connId == PlayerA)
+            {
+                MinesA = mines;
+                MinesReadyA = true;
+            }
+            else if (connId == PlayerB)
+            {
+                MinesB = mines;
+                MinesReadyB = true;
+            }
+        }
+
+
+        public bool MinePlacementStarted { get; set; } = false;
+
 
         public GameInstance(string id)
         {
@@ -102,15 +135,15 @@ namespace BattleShips.Core
                 ships.Add(ship);
             }
 
-            if (PlayerA == connId)
+            if (connId == PlayerA)
             {
                 ShipsA = ships;
-                ReadyA = true;
+                ReadyA = true; 
             }
-            else if (PlayerB == connId)
+            else if (connId == PlayerB)
             {
                 ShipsB = ships;
-                ReadyB = true;
+                ReadyB = true; 
             }
         }
 
@@ -173,5 +206,141 @@ namespace BattleShips.Core
             else
                 CurrentTurn = PlayerA;
         }
+
+
+        // Call when a shot happens: returns whether it was a hit AND any mine triggered info
+        // Note: this wraps RegisterShot: it checks for mine triggers before/after recording hits as you prefer.
+        // This implementation triggers anti-enemy mines if shot lands on mine's position.
+        public bool RegisterShotWithMines(string opponentConnId, Point shot, out bool opponentLost, out List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMines)
+        {
+            triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
+            opponentLost = false;
+
+            Console.WriteLine($"[Server] 🔍 Checking mines at shot position ({shot.X},{shot.Y})");
+
+            var opponentMines = PlayerA == opponentConnId ? MinesA : MinesB;
+            var opponentHitCells = PlayerA == opponentConnId ? HitCellsA : HitCellsB;
+            var opponentShips = PlayerA == opponentConnId ? ShipsA : ShipsB;
+
+            Console.WriteLine($"[Server] Opponent has {opponentMines.Count} mines, {opponentMines.Count(m => !m.IsExploded)} active");
+
+            var minesAtPoint = opponentMines.Where(m => !m.IsExploded && m.Position == shot).ToList();
+            Console.WriteLine($"[Server] Found {minesAtPoint.Count} mines at shot position");
+
+            foreach (var mine in minesAtPoint)
+            {
+                Console.WriteLine($"[Server] Checking mine {mine.Id} ({mine.Category}) at ({mine.Position.X},{mine.Position.Y})");
+                var result = mine.TryTrigger(this, MineTriggerType.EnemyShot, Other(opponentConnId) ?? "");
+                if (result != null)
+                {
+                    Console.WriteLine($"[Server] 💥 Mine triggered! Effect points: {result.Count}");
+                    triggeredMines.Add((mine.Id, mine.Category, result));
+                }
+                else
+                {
+                    Console.WriteLine($"[Server] Mine did not trigger (should not happen for enemy shot on mine position)");
+                }
+            }
+
+            // Remove exploded mines from list
+            opponentMines.RemoveAll(m => m.IsExploded);
+
+            var hit = false;
+            foreach (var ship in opponentShips.Where(s => s.IsPlaced))
+            {
+                if (ship.GetOccupiedCells().Contains(shot))
+                {
+                    hit = true;
+                    break;
+                }
+            }
+
+            if (hit)
+            {
+                opponentHitCells.Add(shot);
+                Console.WriteLine($"[Server] 🎯 Shot hit a ship!");
+            }
+            else
+            {
+                Console.WriteLine($"[Server] 💧 Shot missed ships");
+            }
+
+            opponentLost = AreAllShipsDestroyed(opponentShips, opponentHitCells);
+
+            if (opponentLost)
+                Console.WriteLine($"[Server] 🏁 Opponent lost all ships!");
+
+            return hit;
+        }
+
+        public void DebugShipPositions()
+        {
+            Console.WriteLine($"[GameInstance] 🚢 PlayerA ships:");
+            foreach (var ship in ShipsA.Where(s => s.IsPlaced))
+            {
+                var cells = ship.GetOccupiedCells();
+                Console.WriteLine($"[GameInstance]   - Ship {ship.Id}: {string.Join(", ", cells.Select(p => $"({p.X},{p.Y})"))}");
+            }
+
+            Console.WriteLine($"[GameInstance] 🚢 PlayerB ships:");
+            foreach (var ship in ShipsB.Where(s => s.IsPlaced))
+            {
+                var cells = ship.GetOccupiedCells();
+                Console.WriteLine($"[GameInstance]   - Ship {ship.Id}: {string.Join(", ", cells.Select(p => $"({p.X},{p.Y})"))}");
+            }
+        }
+
+        // Call when a disaster applies hits on player's board (server side).
+        // It should check anti-disaster mines that might trigger for those points.
+        public void ApplyDisasterWithMines(string playerConnId, List<Point> hitPoints, out List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMines)
+        {
+            triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
+
+            Console.WriteLine($"[GameInstance] ApplyDisasterWithMines for {playerConnId} with {hitPoints.Count} hit points");
+
+            // Get the correct mines and hit cells for this player
+            var playerMines = PlayerA == playerConnId ? MinesA : MinesB;
+            var playerHitCells = PlayerA == playerConnId ? HitCellsA : HitCellsB;
+
+            Console.WriteLine($"[GameInstance] Checking {playerMines.Count} mines for player {playerConnId}");
+
+            // Log all mine positions
+            Console.WriteLine($"[GameInstance] All mine positions for player {playerConnId}:");
+            foreach (var mine in playerMines)
+            {
+                Console.WriteLine($"[GameInstance] - Mine {mine.Category} at ({mine.Position.X},{mine.Position.Y}) - Exploded: {mine.IsExploded}");
+            }
+
+            // Log all disaster hit points
+            foreach (var p in hitPoints)
+            {
+                Console.WriteLine($"[GameInstance] Disaster hit at ({p.X},{p.Y})");
+                playerHitCells.Add(p);
+            }
+
+            // Check mines that are on the points
+            var minesTriggered = playerMines.Where(m => !m.IsExploded && hitPoints.Contains(m.Position)).ToList();
+            Console.WriteLine($"[GameInstance] Found {minesTriggered.Count} mines at exact disaster hit points");
+
+            foreach (var mine in minesTriggered)
+            {
+                Console.WriteLine($"[GameInstance] Checking mine at ({mine.Position.X},{mine.Position.Y}) - {mine.Category}");
+                var res = mine.TryTrigger(this, MineTriggerType.Disaster, triggeringConnId: playerConnId);
+                if (res != null)
+                {
+                    Console.WriteLine($"[GameInstance] Mine triggered with {res.Count} effect points");
+                    triggeredMines.Add((mine.Id, mine.Category, res));
+                }
+                else
+                {
+                    Console.WriteLine($"[GameInstance] Mine did not trigger");
+                }
+            }
+
+            playerMines.RemoveAll(m => m.IsExploded);
+            Console.WriteLine($"[GameInstance] Total mines triggered: {triggeredMines.Count}");
+        }
+
+
     }
 }

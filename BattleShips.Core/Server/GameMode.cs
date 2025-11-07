@@ -3,7 +3,6 @@ using System.Threading;
 
 namespace BattleShips.Core
 {
-    // Class not used yet, only for strategy implementation via event generator
     public class GameMode
     {
         public int ShipCount { get; }

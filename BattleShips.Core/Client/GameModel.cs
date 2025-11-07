@@ -4,7 +4,7 @@ using System.Linq;
 
 namespace BattleShips.Core
 {
-    public enum AppState { Menu, Waiting, Placement, Playing, GameOver }
+    public enum AppState { Menu, Waiting, Placement, Playing, GameOver, MineSelection }
 
     // Observable for client side UI
     public class GameModel : INotifyPropertyChanged
@@ -14,6 +14,14 @@ namespace BattleShips.Core
         public HashSet<Point> YourFired { get; } = new();
         public HashSet<Point> YourFiredHits { get; } = new();
         public HashSet<Point> AnimatedCells { get; } = new();
+
+        public List<NavalMine> YourMines { get; } = new();
+
+        public MineCategory? SelectedMineCategory { get; set; }
+
+        public bool IsMinePlacementPhase => State == AppState.MineSelection;
+
+
 
         // for command design patterns - undoing
         private readonly Stack<ICommand> _placementHistory = new();
@@ -153,6 +161,9 @@ namespace BattleShips.Core
             DragOffset = Point.Empty;
             State = AppState.Menu;
             _placementHistory.Clear();
+            YourMines.Clear();
+            SelectedMineCategory = null;
+
         }
         public void UndoLastShipPlacement()
         {
@@ -227,7 +238,6 @@ namespace BattleShips.Core
         public void ApplyOpponentHitByDisaster(Point p)
         {
             // This represents a hit on the opponent's board that you can see (disaster hit)
-            // Add it to YourFiredHits so it shows up on the opponent board (right side)
             YourFired.Add(p);
             YourFiredHits.Add(p);
         }
@@ -236,5 +246,61 @@ namespace BattleShips.Core
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
+
+
+        public void PlaceMineClientSide(Point pos)
+        {
+            if (SelectedMineCategory == null) return;
+            var mine = NavalMineFactory.CreateMine(pos, /*ownerConnId*/ "LOCAL", SelectedMineCategory.Value);
+            YourMines.Add(mine);
+            OnModelPropertyChanged(nameof(YourMines));
+        }
+
+        // Called when server reports mine detonations
+        public void OnMinesTriggered(List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggers)
+        {
+            foreach (var t in triggers)
+            {
+                AnimatedCells.UnionWith(t.effectPoints); // show animations                                    
+            }
+            OnModelPropertyChanged(nameof(AnimatedCells));
+        }
+
+        public void PlaceMine(Point cell)
+        {
+            if (SelectedMineCategory == null) return;
+
+            // Check if cell already has a mine
+            if (YourMines.Any(m => m.Position == cell))
+                return;
+
+            YourMines.Add(NavalMineFactory.CreateMine(cell, "LOCAL", SelectedMineCategory.Value));
+            SelectedMineCategory = null; // deselect after placement
+            OnModelPropertyChanged(nameof(YourMines));
+        }
+
+        public void HealCells(List<Point> healedCells)
+        {
+            foreach (var cell in healedCells)
+            {
+                YourHitsByOpponent.Remove(cell);
+            }
+            OnModelPropertyChanged(nameof(YourHitsByOpponent));
+        }
+
+        public void StartMinePlacement()
+        {
+            State = AppState.MineSelection;
+            CurrentStatus = "Place your mine(s) on your board";
+        }
+
+        // When game starts from server
+        public void OnGameStarted(bool youStart)
+        {
+            State = AppState.Playing; 
+            CurrentStatus = youStart ? "Your turn - click opponent's board to fire!" : "Opponent's turn";
+            _isMyTurn = youStart;
+        }
+
     }
 }

@@ -146,6 +146,19 @@ namespace BattleShips.Client
                 _model.AnimatedCells.Clear();
                 Invalidate();
             });
+
+            _controller.StartMinePlacement += duration => BeginInvoke(() =>
+            {
+                _model.State = AppState.MineSelection;
+                _model.CurrentStatus = $"Place your mine(s) on your board ({duration}s)";
+            });
+
+            _controller.MinesAck += count => BeginInvoke(() =>
+            {
+                _model.State = AppState.Waiting;
+                _model.CurrentStatus = $"Placed {count} mines. Waiting for opponent...";
+            });
+
         }
     }
 }

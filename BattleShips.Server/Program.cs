@@ -36,7 +36,9 @@ await app.RunAsync();
 
 public class GameHub : Hub
 {
-    public const int ShipPlacementTimeSeconds = 60;
+    public const int ShipPlacementTimeSeconds = 120;
+    public const int MinePlacementTimeSeconds = 120;
+
     private record MoveResult
     {
         public int Col, Row, Remaining, Countdown;
@@ -123,6 +125,41 @@ public class GameHub : Hub
         await base.OnConnectedAsync();
     }
 
+    private async Task StartActualGame(GameInstance g)
+    {
+        Console.WriteLine($"[Server] StartActualGame called for game {g.Id}");
+
+        if (g.PlayerA == null || g.PlayerB == null)
+        {
+            Console.WriteLine($"[Server] Cannot start game - missing players");
+            return;
+        }
+
+        g.CurrentTurn = g.PlayerA;
+        g.Started = true;
+
+        if (g.GameMode != null)
+            g.GameMode.SelectEventBasedOnTurn(g.GetTurnCount());
+
+        await Clients.Client(g.PlayerA).SendAsync("GameStarted", g.CurrentTurn == g.PlayerA);
+        await Clients.Client(g.PlayerB).SendAsync("GameStarted", g.CurrentTurn == g.PlayerB);
+
+        var initialCountdown = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
+        Console.WriteLine($"[Server] Sending initial DisasterCountdown={initialCountdown}");
+
+        if (g.PlayerA != null)
+            await Clients.Client(g.PlayerA).SendAsync("DisasterCountdown", initialCountdown);
+        if (g.PlayerB != null)
+            await Clients.Client(g.PlayerB).SendAsync("DisasterCountdown", initialCountdown);
+
+        await Clients.Client(g.CurrentTurn).SendAsync("YourTurn");
+        var other = g.Other(g.CurrentTurn);
+        if (other != null)
+            await Clients.Client(other).SendAsync("OpponentTurn");
+
+        Console.WriteLine($"[Server] Game {g.Id} successfully started!");
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var connId = Context.ConnectionId;
@@ -144,56 +181,156 @@ public class GameHub : Hub
         await base.OnDisconnectedAsync(exception);
     }
 
-    // Client -> server: place ships (list of points), ships are now multi-cell rectangles
+    // place ships (list of points), ships are now multi-cell rectangles
     public async Task PlaceShips(List<Point> shipCells)
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] PlaceShips called by {connId} with {shipCells?.Count ?? 0} positions");
+
         if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
         {
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
         }
 
-        // Check if game should be cancelled due to timeout
         if (g!.ShouldCancelOnNextAction)
         {
-            Console.WriteLine($"[Server] Game {gid} timeout exceeded - cancelling on PlaceShips");
             await CancelGame(g, gid!, "Placement timeout exceeded");
             return;
         }
 
-        // Validate ship placements
         var validationError = ValidateShipPlacement(shipCells);
         if (validationError != null)
         {
-            Console.WriteLine($"[Server] Ship placement validation failed for {connId}: {validationError}");
             await CancelGame(g, gid!, validationError);
             return;
         }
 
-        // Accept ship placement
         g.SetPlayerShips(connId, shipCells ?? new List<Point>());
+
+        if (connId == g.PlayerA) g.ShipsReadyA = true;
+        else if (connId == g.PlayerB) g.ShipsReadyB = true;
+
         await Clients.Caller.SendAsync("PlacementAck", shipCells?.Count ?? 0);
 
-        // if both ready start immediately
-        if (g.ReadyA && g.ReadyB && !g.Started)
+        if (g.ShipsReadyA && g.ShipsReadyB)
         {
-            g.Started = true;
-            await StartGameIfReady(g);
+            Console.WriteLine($"[Server] Both players placed ships for game {g.Id}, notifying for mine placement");
+
+            g.MinesReadyA = false;
+            g.MinesReadyB = false;
+
+            var tasks = new List<Task>();
+            if (g.PlayerA != null)
+                tasks.Add(_hubContext.Clients.Client(g.PlayerA)
+                    .SendAsync("StartMinePlacement", GameHub.MinePlacementTimeSeconds));
+
+            if (g.PlayerB != null)
+                tasks.Add(_hubContext.Clients.Client(g.PlayerB)
+                    .SendAsync("StartMinePlacement", GameHub.MinePlacementTimeSeconds));
+
+            await Task.WhenAll(tasks);
         }
+    }
+
+
+
+    public async Task PlaceMines(List<Point> minePositions, List<string> mineCategories)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] 🔥 PlaceMines called by {connId} with {minePositions?.Count ?? 0} mines");
+
+        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        {
+            Console.WriteLine($"[Server] ❌ Game not found for connection {connId}");
+            await Clients.Caller.SendAsync("Error", "Game not found");
+            return;
+        }
+
+        Console.WriteLine($"[Server] ✅ Found game {gid} for {connId}");
+
+
+        var mines = new List<NavalMine>();
+        if (minePositions != null && mineCategories != null && minePositions.Count == mineCategories.Count)
+        {
+            for (int i = 0; i < minePositions.Count; i++)
+            {
+                if (Enum.TryParse<MineCategory>(mineCategories[i], out var category))
+                {
+                    // Check if mine position overlaps with ships
+                    var playerShips = connId == g.PlayerA ? g.ShipsA : g.ShipsB;
+                    var hasShip = playerShips.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(minePositions[i]));
+
+                    if (hasShip)
+                    {
+                        Console.WriteLine($"[Server] ❌ Mine placement rejected: position ({minePositions[i].X},{minePositions[i].Y}) has a ship");
+                        await Clients.Caller.SendAsync("Error", $"Cannot place mine on ship at position ({minePositions[i].X},{minePositions[i].Y})");
+                        return;
+                    }
+
+                    mines.Add(NavalMineFactory.CreateMine(minePositions[i], connId, category));
+                    Console.WriteLine($"[Server] Created mine: {category} at ({minePositions[i].X},{minePositions[i].Y})");
+                }
+            }
+        }
+
+        g.SetPlayerMines(connId, mines);
+
+        if (connId == g.PlayerA)
+        {
+            g.MinesReadyA = true;
+            Console.WriteLine($"[Server] ✅ PlayerA mines ready. MinesReadyA={g.MinesReadyA}");
+        }
+        else if (connId == g.PlayerB)
+        {
+            g.MinesReadyB = true;
+            Console.WriteLine($"[Server] ✅ PlayerB mines ready. MinesReadyB={g.MinesReadyB}");
+        }
+
+        Console.WriteLine($"[Server] 📊 Game State - MinesReadyA: {g.MinesReadyA}, MinesReadyB: {g.MinesReadyB}");
+
+        await Clients.Caller.SendAsync("MinesAck", mines.Count);
+
+        if (g.MinesReadyA && g.MinesReadyB)
+        {
+            Console.WriteLine($"[Server] 🎉🎉🎉 BOTH PLAYERS READY! Starting game {g.Id}!");
+            await StartActualGame(g);
+        }
+        else
+        {
+            Console.WriteLine($"[Server] ⏳ Waiting for other player... (A: {g.MinesReadyA}, B: {g.MinesReadyB})");
+        }
+    }
+
+    public async Task DebugGameState()
+    {
+        var connId = Context.ConnectionId;
+        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+            return;
+
+        Console.WriteLine($"[DEBUG] Game {gid}");
+        Console.WriteLine($"[DEBUG] - Players: A={g.PlayerA}, B={g.PlayerB}");
+        Console.WriteLine($"[DEBUG] - ShipsReady: A={g.ShipsReadyA}, B={g.ShipsReadyB}");
+        Console.WriteLine($"[DEBUG] - MinesReady: A={g.MinesReadyA}, B={g.MinesReadyB}");
+        Console.WriteLine($"[DEBUG] - Started: {g.Started}");
+        Console.WriteLine($"[DEBUG] - CurrentTurn: {g.CurrentTurn}");
+    }
+
+    public async Task TestConnection(string message)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] TestConnection received from {connId}: {message}");
+        await Clients.Caller.SendAsync("TestResponse", $"Server received: {message}");
     }
 
     private string? ValidateShipPlacement(List<Point>? shipCells)
     {
         if (shipCells == null || shipCells.Count == 0)
-            return null; // Allow empty placements (game will start with 0 ships)
+            return null; 
 
-        // Check for duplicate positions
         if (shipCells.Count != shipCells.Distinct().Count())
             return "Ship placement contains duplicate positions";
 
-        // Check if ship cells are within board bounds
         foreach (var cell in shipCells)
         {
             if (cell.X < 0 || cell.X >= Board.Size || cell.Y < 0 || cell.Y >= Board.Size)
@@ -212,7 +349,6 @@ public class GameHub : Hub
     {
         Console.WriteLine($"[Server] Cancelling game {gid}: {reason}");
 
-        // Notify both players
         var message = $"Game cancelled: {reason}";
         Console.WriteLine($"[Server] Sending GameCancelled to playerA={g.PlayerA} and playerB={g.PlayerB}");
 
@@ -242,11 +378,9 @@ public class GameHub : Hub
             }
         }
 
-        // Clean up game instance
         CleanupGame(gid, g);
     }
 
-    // Client -> server: make move at col,row (col=X,row=Y)
     public async Task MakeMove(int col, int row)
     {
         var connId = Context.ConnectionId;
@@ -267,11 +401,15 @@ public class GameHub : Hub
         Console.WriteLine($"[Server] MakeMove: found game {gid} currentTurn={g.CurrentTurn}");
 
         MoveResult result;
+        List<(Guid, MineCategory, List<Point>)> triggeredMines;
 
         lock (_lock)
         {
-            result = HandleMoveUnderLock(g!, gid!, connId, col, row);
+            result = HandleMoveUnderLock(g!, gid!, connId, col, row, out triggeredMines);
         }
+
+        // Process mine notifications outside the lock
+        await ProcessMineNotifications(g!, gid!, connId, triggeredMines);
 
         await ProcessMoveResults(g!, gid!, connId, result);
     }
@@ -285,9 +423,10 @@ public class GameHub : Hub
         Console.WriteLine($"[Server] Error for {connId}: {message}");
         await Clients.Client(connId).SendAsync("Error", message);
     }
-    private MoveResult HandleMoveUnderLock(GameInstance g, string gid, string connId, int col, int row)
+    private MoveResult HandleMoveUnderLock(GameInstance g, string gid, string connId, int col, int row, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
     {
         var result = new MoveResult();
+        triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
 
         // Increment turn count on every move
         g.IncrementTurnCount();
@@ -306,7 +445,7 @@ public class GameHub : Hub
 
         Console.WriteLine($"[Server] Registering shot for game={gid}");
         var target = new Point(col, row);
-        bool hit = g.RegisterShot(g.Other(connId)!, target, out bool opponentLost);
+        bool hit = g.RegisterShotWithMines(g.Other(connId)!, target, out bool opponentLost, out triggeredMines);
 
         result.Col = col;
         result.Row = row;
@@ -330,6 +469,134 @@ public class GameHub : Hub
         result.Countdown = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
         return result;
     }
+
+    private async Task ProcessMineNotifications(GameInstance g, string gid, string connId, List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMines)
+    {
+        if (triggeredMines.Any())
+        {
+            Console.WriteLine($"[Server] 💥 {triggeredMines.Count} mine(s) triggered!");
+
+            // Collect all effects
+            var allHealedCells = new List<Point>();
+            var allMeteorStrikeCells = new List<Point>();
+            var meteorHitsForA = new List<Point>(); 
+            var meteorHitsForB = new List<Point>(); 
+
+            foreach (var (mineId, category, effectPoints) in triggeredMines)
+            {
+                Console.WriteLine($"[Server] Mine {mineId} ({category}) triggered with {effectPoints.Count} effect points");
+
+                if (category == MineCategory.AntiEnemy_Ricochet || category == MineCategory.AntiDisaster_Ricochet)
+                {
+                    Console.WriteLine($"[Server] 🌋 Meteor strike detected with {effectPoints.Count} impact points");
+                    allMeteorStrikeCells.AddRange(effectPoints);
+
+                    ApplyMeteorStrikeDamage(g, effectPoints, out var hitsA, out var hitsB);
+                    meteorHitsForA.AddRange(hitsA);
+                    meteorHitsForB.AddRange(hitsB);
+                }
+                else
+                {
+                    allHealedCells.AddRange(effectPoints);
+                }
+
+                // Send mine trigger event for visualization
+                if (g.PlayerA != null)
+                    await _hubContext.Clients.Client(g.PlayerA).SendAsync("MineTriggered", mineId, effectPoints, category.ToString());
+                if (g.PlayerB != null)
+                    await _hubContext.Clients.Client(g.PlayerB).SendAsync("MineTriggered", mineId, effectPoints, category.ToString());
+            }
+
+            // Send the healed cells to the owner of the mine
+            if (allHealedCells.Any())
+            {
+                Console.WriteLine($"[Server] 📢 Sending {allHealedCells.Count} healed cells to mine owner");
+                var mineOwner = g.Other(connId);
+                if (mineOwner != null)
+                {
+                    await _hubContext.Clients.Client(mineOwner).SendAsync("CellsHealed", allHealedCells);
+                }
+            }
+
+            // Send meteor strike hits to both players
+            if (allMeteorStrikeCells.Any())
+            {
+                Console.WriteLine($"[Server] 📢 Sending meteor strike: {meteorHitsForA.Count} hits for A, {meteorHitsForB.Count} hits for B");
+
+                if (g.PlayerA != null)
+                {
+                    // Send meteor strike visualization
+                    await _hubContext.Clients.Client(g.PlayerA).SendAsync("MeteorStrike", allMeteorStrikeCells);
+                    // Send actual hits on Player A's ships
+                    if (meteorHitsForA.Any())
+                    {
+                        foreach (var hit in meteorHitsForA)
+                        {
+                            await _hubContext.Clients.Client(g.PlayerA).SendAsync("OpponentMoved", hit.X, hit.Y, true);
+                        }
+                    }
+                    // Send hits on Player B's ships (visible on opponent board)
+                    if (meteorHitsForB.Any())
+                    {
+                        foreach (var hit in meteorHitsForB)
+                        {
+                            await _hubContext.Clients.Client(g.PlayerA).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
+                        }
+                    }
+                }
+
+                if (g.PlayerB != null)
+                {
+                    // Send meteor strike visualization
+                    await _hubContext.Clients.Client(g.PlayerB).SendAsync("MeteorStrike", allMeteorStrikeCells);
+                    // Send actual hits on Player B's ships
+                    if (meteorHitsForB.Any())
+                    {
+                        foreach (var hit in meteorHitsForB)
+                        {
+                            await _hubContext.Clients.Client(g.PlayerB).SendAsync("OpponentMoved", hit.X, hit.Y, true);
+                        }
+                    }
+                    // Send hits on Player A's ships (visible on opponent board)
+                    if (meteorHitsForA.Any())
+                    {
+                        foreach (var hit in meteorHitsForA)
+                        {
+                            await _hubContext.Clients.Client(g.PlayerB).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply meteor strike damage and return which ships were hit
+    private void ApplyMeteorStrikeDamage(GameInstance g, List<Point> strikePoints, out List<Point> hitsForA, out List<Point> hitsForB)
+    {
+        hitsForA = new List<Point>();
+        hitsForB = new List<Point>();
+
+        foreach (var point in strikePoints)
+        {
+            // Damage Player A's ships if hit
+            if (g.PlayerA != null && g.ShipsA.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(point)))
+            {
+                g.HitCellsA.Add(point);
+                hitsForA.Add(point);
+                Console.WriteLine($"[Server] Meteor hit Player A at ({point.X},{point.Y})");
+            }
+
+            // Damage Player B's ships if hit
+            if (g.PlayerB != null && g.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(point)))
+            {
+                g.HitCellsB.Add(point);
+                hitsForB.Add(point);
+                Console.WriteLine($"[Server] Meteor hit Player B at ({point.X},{point.Y})");
+            }
+        }
+    }
+
+
     private DisasterResult? CheckForDisaster(GameInstance g, string gid)
     {
         if (g.GameMode == null) return null;
@@ -433,13 +700,33 @@ public class GameHub : Hub
     {
         Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disaster.TypeName})");
 
-        // Register disaster hits in the game state
-        if (g.PlayerA != null && disaster.HitsForA.Count > 0)
+        if (g.PlayerA != null)
         {
+            List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMinesA;
+
+            g.ApplyDisasterWithMines(g.PlayerA, disaster.Affected, out triggeredMinesA);
+
+            if (triggeredMinesA.Any())
+            {
+                Console.WriteLine($"[Server] 💥 {triggeredMinesA.Count} anti-disaster mine(s) triggered for PlayerA!");
+                await ProcessMineNotifications(g, gid, g.PlayerA, triggeredMinesA);
+            }
+
             g.RegisterDisasterHits(g.PlayerA, disaster.HitsForA);
         }
-        if (g.PlayerB != null && disaster.HitsForB.Count > 0)
+
+        if (g.PlayerB != null)
         {
+            List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMinesB;
+
+            g.ApplyDisasterWithMines(g.PlayerB, disaster.Affected, out triggeredMinesB);
+
+            if (triggeredMinesB.Any())
+            {
+                Console.WriteLine($"[Server] 💥 {triggeredMinesB.Count} anti-disaster mine(s) triggered for PlayerB!");
+                await ProcessMineNotifications(g, gid, g.PlayerB, triggeredMinesB);
+            }
+
             g.RegisterDisasterHits(g.PlayerB, disaster.HitsForB);
         }
 
@@ -542,31 +829,25 @@ public class GameHub : Hub
     private async Task StartGameIfReady(GameInstance g)
     {
         Console.WriteLine($"[Server] StartGameIfReady called for game {g.Id}");
-        // ensure both players exist
         if (g.PlayerA == null || g.PlayerB == null) return;
 
-        // Check if both players placed ships
         if (!await CheckShipPlacement(g)) return; // Game was cancelled
 
         // choose starter (PlayerA)
         g.CurrentTurn = g.PlayerA;
         g.Started = true;
 
-        // Initialize event generator for turn count 0
         if (g.GameMode != null)
             g.GameMode.SelectEventBasedOnTurn(g.GetTurnCount());
 
-        // inform both clients that game started and who begins
         await Clients.Client(g.PlayerA).SendAsync("GameStarted", g.CurrentTurn == g.PlayerA);
         await Clients.Client(g.PlayerB).SendAsync("GameStarted", g.CurrentTurn == g.PlayerB);
 
-        // send initial disaster countdown to both clients (if game mode exists)
         var initialCountdown = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
         Console.WriteLine($"[Server] Sending initial DisasterCountdown={initialCountdown} to {g.PlayerA} and {g.PlayerB}");
         if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("DisasterCountdown", initialCountdown);
         if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("DisasterCountdown", initialCountdown);
 
-        // send initial turn notifications
         await Clients.Client(g.CurrentTurn).SendAsync("YourTurn");
         var other = g.Other(g.CurrentTurn);
         if (other != null)
@@ -575,7 +856,6 @@ public class GameHub : Hub
 
     private async Task<bool> CheckShipPlacement(GameInstance game)
     {   
-        // If at least one player didn't place ships, cancel game and notify both players
         if (!game.ReadyA || !game.ReadyB)
         {
             var playerAName = game.PlayerA ?? "Player A";
@@ -591,14 +871,11 @@ public class GameHub : Hub
 
             Console.WriteLine($"[Server] Game {game.Id} cancelled: {reason}");
             
-            // Use the game's ID directly
             var gid = game.Id;
             await CancelGame(game, gid, reason);
             
             return false; // Game cancelled
         }
-
-        // Both players placed ships - game can proceed
         return true;
     }
     
@@ -609,5 +886,4 @@ public class GameHub : Hub
         Console.WriteLine($"Received from {msg.From}: {msg.Text}");
         await Clients.All.SendAsync("ReceiveHello", msg);
     }
-
 }

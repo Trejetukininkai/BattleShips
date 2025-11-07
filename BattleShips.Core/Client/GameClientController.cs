@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading.Tasks;
@@ -32,6 +32,15 @@ namespace BattleShips.Core.Client
         public event Action<List<Point>, List<Point>?, string?>? DisasterOccurred;
         public event Action? DisasterFinished;
 
+        public event Action<int>? StartMinePlacement; // called when server says "place mines"
+        public event Action<int>? MinesAck;           // called when server acknowledges mine placement
+
+        public event Action<Guid, List<Point>, string>? MineTriggered;
+        public event Action<List<Point>>? CellsHealed;
+
+        public event Action<List<Point>>? MeteorStrike;
+
+
         private void OnGameCancelled(string? message)
         {
             Console.WriteLine($"[GameClientController] OnGameCancelled invoked with: {message}");
@@ -43,6 +52,12 @@ namespace BattleShips.Core.Client
             _client = client;
             _model = model;
             WireClient();
+
+            _client.StartMinePlacement += duration =>
+            {
+                // Call the actual UI method
+                _model.StartMinePlacement();
+            };
         }
 
         public bool IsConnected => _client.IsConnected;
@@ -70,6 +85,41 @@ namespace BattleShips.Core.Client
             _client.GameCancelled += OnGameCancelled;
             _client.DisasterOccurred += (cells, hits, type) => DisasterOccurred?.Invoke(cells, hits, type);
             _client.DisasterFinished += () => DisasterFinished?.Invoke();
+            _client.StartMinePlacement += secs => StartMinePlacement?.Invoke(secs);
+            _client.MinesAck += count => MinesAck?.Invoke(count);
+            _client.StartMinePlacement += duration =>
+            {
+                _model.State = AppState.MineSelection;
+                _model.CurrentStatus = "Place your mine(s) on your board";
+            };
+            
+            _client.MinesAck += count =>
+            {
+                Console.WriteLine($"[Client] MinesAck received, count={count}");
+                MinesAck?.Invoke(count);
+            };
+
+            _client.GameStarted += youStart =>
+            {
+                Console.WriteLine($"[Client] GameStarted received, youStart={youStart}");
+                _model.OnGameStarted(youStart); 
+                GameStarted?.Invoke(youStart);
+            };
+
+            _client.MineTriggered += (id, points, category) => MineTriggered?.Invoke(id, points, category);
+            _client.CellsHealed += (healedCells) => CellsHealed?.Invoke(healedCells);
+
+            _client.MeteorStrike += (strikePoints) => MeteorStrike?.Invoke(strikePoints);
         }
+
+        public Task PlaceMines(List<Point> minePositions, List<string> mineCategories)
+        {
+            Console.WriteLine($"[GameClientController] 📢 PlaceMines called with {minePositions?.Count ?? 0} positions and {mineCategories?.Count ?? 0} categories");
+            return _client.PlaceMines(minePositions, mineCategories);
+        }
+
+        public Task DebugGameState() => _client.DebugGameState();
+
+        public Task TestConnection(string message) => _client.TestConnection(message);
     }
 }

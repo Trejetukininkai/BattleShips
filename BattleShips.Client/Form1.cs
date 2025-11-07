@@ -26,6 +26,9 @@ namespace BattleShips.Client
         private System.Windows.Forms.Timer? _uiTimer;
         private System.Threading.CancellationTokenSource? _disasterCts;
 
+        public List<Rectangle> mineOptionRects = new List<Rectangle>();
+
+
         public Form1()
         {
             InitializeComponent();
@@ -66,8 +69,53 @@ namespace BattleShips.Client
 
             WireControllerEvents();
 
+            _controller.MineTriggered += OnMineTriggered;
+            _controller.CellsHealed += OnCellsHealed;
+
             // Subscribe to model property changes for automatic UI updates
             _model.PropertyChanged += OnModelPropertyChanged;
+
+            _controller.MeteorStrike += OnMeteorStrike;
+        }
+
+        private void OnMeteorStrike(List<Point> strikePoints)
+        {
+            Console.WriteLine($"[Form1] 🌋 Meteor Strike with {strikePoints.Count} impact points");
+
+            // Add to animated cells for visualization
+            foreach (var point in strikePoints)
+            {
+                _model.AnimatedCells.Add(point);
+            }
+
+            Invalidate();
+        }
+
+
+        private void OnMineTriggered(Guid mineId, List<Point> effectPoints, string category)
+        {
+            Console.WriteLine($"[Form1] Mine {mineId} triggered with {effectPoints.Count} effect points");
+
+            // Show mine explosion animation
+            foreach (var point in effectPoints)
+            {
+                _model.AnimatedCells.Add(point);
+            }
+
+            Invalidate();
+        }
+
+        private void OnCellsHealed(List<Point> healedCells)
+        {
+            Console.WriteLine($"[Form1] 🩹 Cells healed: {string.Join(", ", healedCells.Select(p => $"({p.X},{p.Y})"))}");
+
+            // Remove these cells from hit sets
+            foreach (var cell in healedCells)
+            {
+                _model.YourHitsByOpponent.Remove(cell);
+            }
+
+            Invalidate();
         }
 
         // ------------------------------
@@ -549,23 +597,47 @@ namespace BattleShips.Client
                 case nameof(_model.CurrentStatus):
                     if (_lblStatus != null)
                     {
-                        _lblStatus.Text = _model.CurrentStatus;
-                        Invalidate();
+                        if (_lblStatus.InvokeRequired)
+                        {
+                            _lblStatus.Invoke(() =>
+                            {
+                                _lblStatus.Text = _model.CurrentStatus;
+                                Invalidate();
+                            });
+                        }
+                        else
+                        {
+                            _lblStatus.Text = _model.CurrentStatus;
+                            Invalidate();
+                        }
                     }
                     break;
+
                 case nameof(_model.State):
                 case nameof(_model.IsMyTurn):
                 case nameof(_model.PlacementSecondsLeft):
                 case nameof(_model.DisasterCountdown):
-                    UpdateCountdownLabel();
-                    Invalidate();
+                    if (InvokeRequired)
+                    {
+                        Invoke(() => { UpdateCountdownLabel(); Invalidate(); });
+                    }
+                    else
+                    {
+                        UpdateCountdownLabel();
+                        Invalidate();
+                    }
                     break;
+
                 case nameof(_model.IsDisasterAnimating):
                 case nameof(_model.CurrentDisasterName):
-                    Invalidate();
+                    if (InvokeRequired)
+                        Invoke(Invalidate);
+                    else
+                        Invalidate();
                     break;
             }
         }
+
 
         private void ResetBoards()
         {
@@ -794,9 +866,90 @@ namespace BattleShips.Client
 
         private async void OnMouseClickGrid(object? sender, MouseEventArgs e)
         {
-            var rightRect = _renderer.GetRightBoardRect();
             var mouse = new Point(e.X, e.Y);
 
+            if (_model.State == AppState.MineSelection)
+            {
+                // Check if user clicked a mine option
+                var selectedCategory = _renderer.HitTestMineOption(mouse);
+                if (selectedCategory.HasValue)
+                {
+                    _model.SelectedMineCategory = selectedCategory.Value;
+                    _model.CurrentStatus = $"Selected {selectedCategory.Value}. Click your board to place it.";
+                    return; 
+                }
+
+                // Check if user clicked the left board with a mine category selected
+                var leftCell = _renderer.HitTest(mouse, _renderer.GetLeftBoardRect());
+                if (leftCell.HasValue && _model.SelectedMineCategory.HasValue)
+                {
+                    // Check if this cell already has a mine
+                    if (_model.YourMines.Any(m => m.Position == leftCell.Value))
+                    {
+                        _model.CurrentStatus = "Cell already has a mine! Choose another location.";
+                        _model.SelectedMineCategory = null; // ✅ Reset selection
+                        return;
+                    }
+
+                    // Check if cell has a ship
+                    if (_model.YourShips.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(leftCell.Value)))
+                    {
+                        _model.CurrentStatus = "Cannot place mine on a ship! Choose another location.";
+                        _model.SelectedMineCategory = null; // ✅ Reset selection
+                        return;
+                    }
+
+                    // Place the mine on the model
+                    _model.PlaceMine(leftCell.Value);
+                    _model.CurrentStatus = $"Mine placed at {GetCellName(leftCell.Value)}. " +
+                                          $"Placed {_model.YourMines.Count}/3 mines.";
+
+                    // Auto-complete after placing 3 mines
+                    if (_model.YourMines.Count >= 3)
+                    {
+                        _model.CurrentStatus = "All mines placed. Sending to server...";
+
+                        if (_controller.IsConnected)
+                        {
+                            try
+                            {
+                                // Convert to simple types for SignalR
+                                var minePositions = _model.YourMines.Select(m => m.Position).ToList();
+                                var mineCategories = _model.YourMines.Select(m => m.Category.ToString()).ToList();
+
+                                Console.WriteLine($"[Client] 📢 Sending {minePositions.Count} mines to server...");
+                                foreach (var pos in minePositions)
+                                {
+                                    Console.WriteLine($"[Client] Mine at ({pos.X},{pos.Y})");
+                                }
+
+                                await _controller.PlaceMines(minePositions, mineCategories);
+                                Console.WriteLine($"[Client] ✅ Mines sent to server successfully");
+                                _model.CurrentStatus = "Mines submitted. Waiting for opponent...";
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[Client] ❌ Failed to send mines: {ex.Message}");
+                                MessageBox.Show($"Failed to send mines: {ex.Message}", "Error",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                _model.CurrentStatus = "Failed to send mines. Try again.";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Reset selection for next mine placement
+                        _model.SelectedMineCategory = null;
+                        _model.CurrentStatus = "Choose another mine type to place.";
+                    }
+
+                    Invalidate(); // Refresh the display
+                    return;
+                }
+            }
+
+
+            var rightRect = _renderer.GetRightBoardRect();
             var hitRight = _renderer.HitTest(mouse, rightRect);
             if (hitRight != null)
             {
@@ -805,7 +958,7 @@ namespace BattleShips.Client
                     MessageBox.Show("Cannot make moves while disaster is happening", "Wait", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-                if (_model.State != AppState.Playing || !_model.IsMyTurn) 
+                if (_model.State != AppState.Playing || !_model.IsMyTurn)
                 {
                     MessageBox.Show("Not your turn", "Wait", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
@@ -832,6 +985,55 @@ namespace BattleShips.Client
             }
         }
 
+        private string GetCellName(Point cell)
+        {
+            var colChar = (char)('A' + cell.X);
+            return $"{colChar}{cell.Y + 1}";
+        }
+
+        private async void DebugGameState()
+        {
+            if (_controller.IsConnected)
+            {
+                try
+                {
+                    await _controller.DebugGameState();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Debug failed: {ex.Message}");
+                }
+            }
+        }
+
+        private async void TestSignalRConnection()
+        {
+            if (_controller.IsConnected)
+            {
+                try
+                {
+                    Console.WriteLine($"[Client] Testing SignalR connection...");
+                    await _controller.TestConnection("Hello from client");
+                    Console.WriteLine($"[Client] SignalR test sent");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Client] SignalR test failed: {ex.Message}");
+                }
+            }
+        }
+
+        // Call it from a button or key press
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.F12) // Press F12 to debug
+            {
+                DebugGameState();
+            }
+            base.OnKeyDown(e);
+        }
+
+
         private void OnKeyDown(object? sender, KeyEventArgs e)
         {
             if (_model.DraggedShip != null && (e.KeyCode == Keys.R || e.KeyCode == Keys.Space))
@@ -841,5 +1043,25 @@ namespace BattleShips.Client
                 e.Handled = true;
             }
         }
+
+        public MineCategory? HitTestMineOption(Point mouse)
+        {
+            for (int i = 0; i < mineOptionRects.Count; i++)
+            {
+                if (mineOptionRects[i].Contains(mouse))
+                {
+                    return i switch
+                    {
+                        0 => MineCategory.AntiEnemy_Restore,
+                        1 => MineCategory.AntiDisaster_Restore,
+                        2 => MineCategory.AntiEnemy_Ricochet,
+                        3 => MineCategory.AntiDisaster_Ricochet,
+                        _ => null
+                    };
+                }
+            }
+            return null;
+        }
+
     }
 }
