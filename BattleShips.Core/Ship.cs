@@ -5,7 +5,6 @@ using System.Linq;
 
 namespace BattleShips.Core
 {
-    // ===== ENUMS =====
     public enum ShipOrientation
     {
         Horizontal,
@@ -18,7 +17,6 @@ namespace BattleShips.Core
         Curvy
     }
 
-    // ===== INTERFACES =====
     public interface IShip
     {
         int Length { get; }
@@ -39,7 +37,7 @@ namespace BattleShips.Core
         IShip CreateDestroyer(int length, int id);
     }
 
-    // ===== ABSTRACT FACTORY BASE =====
+    //  ABSTRACT FACTORY BASE 
     public abstract class ShipFactoryBase : IClass
     {
         protected ShipClass ShipClassType { get; }
@@ -78,7 +76,7 @@ namespace BattleShips.Core
         public BlockyClass() : base(ShipClass.Blocky) { }
     }
 
-    // ===== BASE SHIP IMPLEMENTATION =====
+    //  BASE SHIP  
     public abstract class BaseShip : IShip
     {
         public int Length { get; protected set; }
@@ -114,7 +112,7 @@ namespace BattleShips.Core
         public abstract List<Point> GetOccupiedCells();
     }
 
-    // ===== CONCRETE SHIPS =====
+    //  CONCRETE SHIPS 
     public class AircraftCarrier : BaseShip
     {
         public AircraftCarrier(int length, int id) : base(length, id) { }
@@ -219,14 +217,14 @@ namespace BattleShips.Core
         }
     }
 
-    // ===== CLIENT / CONFIGURATION =====
+
     public static class FleetConfiguration
     {
         public static readonly List<int> StandardFleet = new() { 5, 4, 3, 3, 2 };
 
         public static List<IShip> CreateStandardFleet()
         {
-            // 🎲 Randomly pick a style: 0 = Blocky, 1 = Curvy
+            // Randomly pick a style: 0 = Blocky, 1 = Curvy
             var rng = new Random();
             ShipClass randomClass = rng.Next(2) == 0 ? ShipClass.Blocky : ShipClass.Curvy;
 

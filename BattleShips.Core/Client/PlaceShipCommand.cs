@@ -31,7 +31,7 @@ namespace BattleShips.Core
 
         public void Execute()
         {
-            // Store old state for undo
+            // old state
             _previousPosition = _ship.Position;
             _wasPlacedBefore = _ship.IsPlaced;
 

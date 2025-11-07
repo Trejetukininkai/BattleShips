@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Threading.Tasks;
@@ -30,6 +30,15 @@ namespace BattleShips.Core
         public event Action<List<Point>, List<Point>, string?>? DisasterOccurred;
         public event Action<int>? DisasterCountdownChanged;
         public event Action? DisasterFinished;
+
+        public event Action<int>? StartMinePlacement;
+        public event Action<int>? MinesAck;
+
+        public event Action<Guid, List<Point>, string>? MineTriggered;
+        public event Action<List<Point>>? CellsHealed;
+
+        public event Action<List<Point>>? MeteorStrike;
+
 
         public async Task ConnectAsync(string url)
         {
@@ -66,6 +75,40 @@ namespace BattleShips.Core
             _conn.On<List<Point>, List<Point>, string?>("DisasterOccurred", (affected, hitsForMe, type) => { Console.WriteLine($"[GameClient] DisasterOccurred -> {affected.Count} cells type={type}"); DisasterOccurred?.Invoke(affected, hitsForMe, type); });
             _conn.On<int>("DisasterCountdown", v => { Console.WriteLine($"[GameClient] DisasterCountdown -> {v}"); DisasterCountdownChanged?.Invoke(v); });
 
+            
+            
+            _conn.On<int>("StartMinePlacement", durationSeconds =>
+            {
+                Console.WriteLine($"[GameClient] StartMinePlacement -> {durationSeconds}s");
+                StartMinePlacement?.Invoke(durationSeconds); // triggers UI transition
+            });
+
+
+            _conn.On<int>("MinesAck", count =>
+            {
+                Console.WriteLine($"[GameClient] MinesAck -> {count} mines placed");
+                MinesAck?.Invoke(count); 
+            });
+
+            _conn.On<Guid, List<Point>, string>("MineTriggered", (id, points, category) =>
+            {
+                Console.WriteLine($"[GameClient] MineTriggered: {id}, {points.Count} points, {category}");
+                MineTriggered?.Invoke(id, points, category);
+            });
+
+            _conn.On<List<Point>>("CellsHealed", (healedCells) =>
+            {
+                Console.WriteLine($"[GameClient] CellsHealed: {healedCells.Count} cells");
+                CellsHealed?.Invoke(healedCells);
+            });
+
+            _conn.On<List<Point>>("MeteorStrike", (strikePoints) =>
+            {
+                Console.WriteLine($"[GameClient] MeteorStrike: {strikePoints.Count} points");
+                MeteorStrike?.Invoke(strikePoints);
+            });
+
+
             await _conn.StartAsync();
             Console.WriteLine("[GameClient] Hub connection started");
             await _conn.SendAsync("Ping", "client-hello");
@@ -98,5 +141,27 @@ namespace BattleShips.Core
         {
             try { _ = DisconnectAsync(); } catch { }
         }
+
+        public Task PlaceMines(List<Point> minePositions, List<string> mineCategories)
+        {
+            Console.WriteLine($"[GameClient] 📢 PlaceMines called with {minePositions?.Count ?? 0} positions and {mineCategories?.Count ?? 0} categories");
+            if (_conn == null) throw new InvalidOperationException("Not connected");
+            return _conn.SendAsync("PlaceMines", minePositions, mineCategories);
+        }
+
+        public Task TestConnection(string message)
+        {
+            Console.WriteLine($"[GameClient] TestConnection called: {message}");
+            if (_conn == null) throw new InvalidOperationException("Not connected");
+            return _conn.SendAsync("TestConnection", message);
+        }
+
+        public Task DebugGameState()
+        {
+            if (_conn == null) throw new InvalidOperationException("Not connected");
+            return _conn.SendAsync("DebugGameState");
+        }
+
+
     }
 }
