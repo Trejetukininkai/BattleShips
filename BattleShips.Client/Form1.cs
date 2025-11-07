@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using BattleShips.Core;
 using BattleShips.Core.Client;
+using static BattleShips.Core.BoardRenderer;
 
 namespace BattleShips.Client
 {
@@ -14,9 +15,9 @@ namespace BattleShips.Client
         private readonly GameClientController _controller;
         private readonly GameModel _model = new GameModel();
         private readonly SFXService _sfx;
-        private readonly BoardRenderer _renderer = new BoardRenderer(cell: 40, margin: 80);
+        private readonly BoardRenderer _renderer; 
         private readonly ShipPaletteRenderer _paletteRenderer = new ShipPaletteRenderer(cell: 40, margin: 80);
-
+        private readonly BoardRendererDirector _rendererDirector = new BoardRendererDirector();
         private bool _awaitingMove = false;
 
         private Panel? _startupPanel;
@@ -33,15 +34,19 @@ namespace BattleShips.Client
         {
             InitializeComponent();
             DoubleBuffered = true;
-            
-            // Modern dark theme
-            BackColor = Color.FromArgb(15, 20, 30);
+
+            // Use builder to create random theme BoardRenderer
+            _renderer = _rendererDirector.ConstructRandomTheme();
+
+            // Set form background color based on theme
+            BackColor = _renderer.BackgroundColor;
             ForeColor = Color.White;
 
             var totalWidth = 2 * _renderer.Margin + Board.Size * _renderer.Cell * 2;
             var boardHeight = Board.Size * _renderer.Cell;
-            var totalHeight = 2 * _renderer.Margin + boardHeight + 150; // Extra space for palette below (increased from 120 to 150)
+            var totalHeight = 2 * _renderer.Margin + boardHeight + 150;
             MinimumSize = new Size(totalWidth, totalHeight);
+
 
             var rawClient = new GameClient();
             _controller = new GameClientController(rawClient, _model);
@@ -663,9 +668,9 @@ namespace BattleShips.Client
                 var shakeY = (_animRandom.NextSingle() - 0.5f) * _screenShakeIntensity * 2;
                 g.TranslateTransform(shakeX, shakeY);
             }
-            
-            g.Clear(Color.FromArgb(15, 20, 30)); // Modern dark background
-            
+
+            g.Clear(_renderer.BackgroundColor);
+
             // Enable anti-aliasing for smooth graphics
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
