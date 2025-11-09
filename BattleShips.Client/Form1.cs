@@ -29,6 +29,9 @@ namespace BattleShips.Client
 
         public List<Rectangle> mineOptionRects = new List<Rectangle>();
 
+        private List<Rectangle> _powerUpButtonRects = new List<Rectangle>();
+
+
 
         public Form1()
         {
@@ -763,6 +766,9 @@ namespace BattleShips.Client
                 g.FillRectangle(bg, rect);
                 g.DrawString(txt, bigFont, Brushes.Orange, rect.Left + 8, rect.Top + 4);
             }
+
+            using var powerUpFont = new Font("Segoe UI", 10, FontStyle.Bold);
+            DrawPowerUpUI(g, powerUpFont);
         }
 
         private void OnMouseDown(object? sender, MouseEventArgs e)
@@ -953,6 +959,19 @@ namespace BattleShips.Client
                 }
             }
 
+            for (int i = 0; i < _powerUpButtonRects.Count; i++)
+            {
+                if (_powerUpButtonRects[i].Contains(e.Location))
+                {
+                    var powerUp = _model.AvailablePowerUps[i];
+                    if (_model.CanActivatePowerUp(powerUp))
+                    {
+                        _model.ActivatePowerUp(powerUp, _controller);
+                    }
+                    return;
+                }
+            }
+
 
             var rightRect = _renderer.GetRightBoardRect();
             var hitRight = _renderer.HitTest(mouse, rightRect);
@@ -1068,5 +1087,78 @@ namespace BattleShips.Client
             return null;
         }
 
+        /*private void InitializePowerUpUI()
+        {
+            _powerUpButtonRects.Clear();
+            int buttonWidth = 120;
+            int buttonHeight = 40;
+            int startX = _renderer.Margin;
+            int startY = 100; // Position below status
+
+            foreach (var powerUp in _model.AvailablePowerUps)
+            {
+                _powerUpButtonRects.Add(new Rectangle(startX, startY, buttonWidth, buttonHeight));
+                startY += buttonHeight + 5;
+            }
+        }*/
+
+        private void DrawPowerUpUI(Graphics g, Font font)
+        {
+            // Draw AP counter
+            using var apFont = new Font(font.FontFamily, 12, FontStyle.Bold);
+            using var apBrush = new SolidBrush(Color.Gold);
+            g.DrawString(_model.ActionPointsText, apFont, apBrush, _renderer.Margin, 70);
+
+            // Initialize powerup button rectangles if needed
+            if (_powerUpButtonRects.Count != _model.AvailablePowerUps.Count)
+            {
+                InitializePowerUpButtons();
+            }
+
+            // Draw powerup buttons
+            for (int i = 0; i < _model.AvailablePowerUps.Count; i++)
+            {
+                var powerUp = _model.AvailablePowerUps[i];
+
+                if (i >= _powerUpButtonRects.Count)
+                    continue;
+
+                var rect = _powerUpButtonRects[i];
+
+                bool canActivate = _model.CanActivatePowerUp(powerUp);
+                var buttonColor = canActivate ? Color.FromArgb(80, 180, 80) : Color.FromArgb(120, 120, 120);
+
+                using var buttonBrush = new SolidBrush(buttonColor);
+                using var textBrush = new SolidBrush(Color.White);
+
+                g.FillRectangle(buttonBrush, rect);
+                g.DrawRectangle(Pens.White, rect);
+
+                var text = $"{powerUp.Name} ({powerUp.Cost} AP)";
+                g.DrawString(text, font, textBrush, rect.X + 5, rect.Y + 12);
+            }
+        }
+
+        private void InitializePowerUpButtons()
+        {
+            _powerUpButtonRects.Clear();
+
+            int buttonWidth = 150;
+            int buttonHeight = 40;
+            int startX = _renderer.Margin;
+            int startY = 100; // Below AP counter
+            int spacing = 10;
+
+            for (int i = 0; i < _model.AvailablePowerUps.Count; i++)
+            {
+                var rect = new Rectangle(
+                    startX,
+                    startY + i * (buttonHeight + spacing),
+                    buttonWidth,
+                    buttonHeight
+                );
+                _powerUpButtonRects.Add(rect);
+            }
+        }
     }
 }

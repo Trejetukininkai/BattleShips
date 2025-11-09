@@ -40,6 +40,10 @@ namespace BattleShips.Core.Client
 
         public event Action<List<Point>>? MeteorStrike;
 
+        public event Action<int>? ActionPointsUpdated;
+        public event Action<string>? PowerUpActivated;
+
+
 
         private void OnGameCancelled(string? message)
         {
@@ -110,6 +114,14 @@ namespace BattleShips.Core.Client
             _client.CellsHealed += (healedCells) => CellsHealed?.Invoke(healedCells);
 
             _client.MeteorStrike += (strikePoints) => MeteorStrike?.Invoke(strikePoints);
+
+            _client.ActionPointsUpdated += (ap) =>
+            {
+                Console.WriteLine($"[ClientController] ActionPointsUpdated received: {ap}");
+                _model.ActionPoints = ap; // ← THIS LINE IS MISSING!
+                ActionPointsUpdated?.Invoke(ap);
+            };
+            _client.PowerUpActivated += (powerUp) => PowerUpActivated?.Invoke(powerUp);
         }
 
         public Task PlaceMines(List<Point> minePositions, List<string> mineCategories)
@@ -121,5 +133,11 @@ namespace BattleShips.Core.Client
         public Task DebugGameState() => _client.DebugGameState();
 
         public Task TestConnection(string message) => _client.TestConnection(message);
+
+        public Task ActivatePowerUp(string powerUpName)
+        {
+            Console.WriteLine($"[GameClientController] Activating powerup: {powerUpName}");
+            return _client.ActivatePowerUp(powerUpName);
+        }
     }
 }

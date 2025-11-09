@@ -1,3 +1,4 @@
+using BattleShips.Core.Client;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
@@ -143,6 +144,31 @@ namespace BattleShips.Core
         public IShip? DraggedShip { get; set; }
         public Point DragOffset { get; set; }
 
+        private int _actionPoints;
+        public int ActionPoints
+        {
+            get => _actionPoints;
+            set
+            {
+                if (_actionPoints != value)
+                {
+                    _actionPoints = value;
+                    OnModelPropertyChanged(nameof(ActionPoints));
+                    OnModelPropertyChanged(nameof(ActionPointsText));
+                }
+            }
+        }
+
+        public string ActionPointsText => $"AP: {ActionPoints}";
+
+        // PowerUp states
+        public bool HasMiniNukeActive { get; set; }
+        public bool IsSelectingRepairTarget { get; set; }
+        public Point? RepairTarget { get; set; }
+
+        // Available powerups
+        public List<IPowerUp> AvailablePowerUps { get; } = PowerUpFactory.GetAllPowerUps();
+
         public event PropertyChangedEventHandler? PropertyChanged;
         public void Reset()
         {
@@ -164,7 +190,33 @@ namespace BattleShips.Core
             YourMines.Clear();
             SelectedMineCategory = null;
 
+            ActionPoints = 0;
+            HasMiniNukeActive = false;
+            IsSelectingRepairTarget = false;
+            RepairTarget = null;
+
         }
+
+        public void IncrementActionPoints()
+        {
+            ActionPoints++;
+            Console.WriteLine($"[GameModel] Action Points: {ActionPoints}");
+        }
+
+        public bool CanActivatePowerUp(IPowerUp powerUp)
+        {
+            return powerUp.CanActivate(this, ActionPoints);
+        }
+
+        public void ActivatePowerUp(IPowerUp powerUp, GameClientController controller)
+        {
+            if (CanActivatePowerUp(powerUp))
+            {
+                ActionPoints -= powerUp.Cost;
+                powerUp.ActivatePowerUp(this, controller);
+            }
+        }
+
         public void UndoLastShipPlacement()
         {
             if (_placementHistory.Count == 0)

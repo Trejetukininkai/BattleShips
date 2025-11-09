@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using BattleShips.Core;
 using BattleShips.Core.Server;
+using BattleShips.Core.Client;
 using System;
 using System.IO;
 using System.Collections.Concurrent;
@@ -45,6 +46,7 @@ public class GameHub : Hub
         public bool Hit;
         public string? ErrorMessage, GameOverCaller, GameOverOpponent;
         public DisasterResult? Disaster;
+        public List<Point> AllHitCells = new();
     }
 
     private record DisasterResult
@@ -406,13 +408,21 @@ public class GameHub : Hub
         lock (_lock)
         {
             result = HandleMoveUnderLock(g!, gid!, connId, col, row, out triggeredMines);
+
+            if (result.Hit)
+            {
+                // Award AP for the hit
+                var shooterConnId = connId;
+                g.AddActionPoints(shooterConnId, 1);
+                Console.WriteLine($"[Server] Awarded 1 AP to {shooterConnId} for hit. Total AP: {g.GetActionPoints(shooterConnId)}");
+            }
         }
 
-        // Process mine notifications outside the lock
         await ProcessMineNotifications(g!, gid!, connId, triggeredMines);
 
         await ProcessMoveResults(g!, gid!, connId, result);
     }
+
 
     private bool TryGetGame(string connId, out GameInstance? game, out string? gid)
     {
@@ -423,12 +433,13 @@ public class GameHub : Hub
         Console.WriteLine($"[Server] Error for {connId}: {message}");
         await Clients.Client(connId).SendAsync("Error", message);
     }
+
     private MoveResult HandleMoveUnderLock(GameInstance g, string gid, string connId, int col, int row, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
     {
         var result = new MoveResult();
         triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
 
-        // Increment turn count on every move
+        // Increment turn count on every move - THIS IS CORRECT
         g.IncrementTurnCount();
 
         if (!g.Started)
@@ -443,32 +454,151 @@ public class GameHub : Hub
             return result;
         }
 
-        Console.WriteLine($"[Server] Registering shot for game={gid}");
-        var target = new Point(col, row);
-        bool hit = g.RegisterShotWithMines(g.Other(connId)!, target, out bool opponentLost, out triggeredMines);
-
-        result.Col = col;
-        result.Row = row;
-        result.Hit = hit;
-        result.Remaining = g.GetRemainingShips(g.Other(connId)!);
-
-        if (opponentLost)
+        // Check for MiniNuke
+        if (g.HasMiniNuke(connId))
         {
-            result.GameOverCaller = "You win!";
-            result.GameOverOpponent = "You lose.";
-            CleanupGame(gid, g);
+            Console.WriteLine($"[Server] MiniNuke activated by {connId} at ({col},{row})");
+            result = HandleMiniNukeShot(g, connId, col, row, out triggeredMines);
+            g.SetMiniNuke(connId, false);
         }
         else
         {
-            if (!hit)
-                g.SwitchTurn();
+            Console.WriteLine($"[Server] Registering normal shot for game={gid}");
+            var target = new Point(col, row);
+            bool hit = g.RegisterShotWithMines(g.Other(connId)!, target, out bool opponentLost, out triggeredMines);
 
-            result.Disaster = CheckForDisaster(g, gid);
+            result.Col = col;
+            result.Row = row;
+            result.Hit = hit;
+            result.Remaining = g.GetRemainingShips(g.Other(connId)!);
+
+            if (opponentLost)
+            {
+                result.GameOverCaller = "You win!";
+                result.GameOverOpponent = "You lose.";
+                CleanupGame(gid, g);
+            }
+            else
+            {
+                if (!hit)
+                    g.SwitchTurn();
+
+                // FIX: Only decrement disaster countdown ONCE per move
+                result.Disaster = CheckForDisaster(g, gid);
+            }
         }
 
         result.Countdown = g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1;
         return result;
     }
+
+    private MoveResult HandleMiniNukeShot(GameInstance g, string connId, int centerCol, int centerRow, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
+    {
+        var result = new MoveResult();
+        triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
+
+        var opponentConnId = g.Other(connId);
+        var totalHits = 0;
+        var allHitCells = new List<Point>(); 
+
+        // Shoot in 3x3 area around the center
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                var target = new Point(centerCol + dx, centerRow + dy);
+
+                // Check bounds
+                if (target.X < 0 || target.X >= Board.Size || target.Y < 0 || target.Y >= Board.Size)
+                    continue;
+
+                bool hit = g.RegisterShotWithMines(opponentConnId!, target, out bool opponentLost, out var mineTriggers);
+                triggeredMines.AddRange(mineTriggers);
+
+                if (hit)
+                {
+                    totalHits++;
+                    allHitCells.Add(target); // Track this hit cell
+                    Console.WriteLine($"[Server] MiniNuke hit at ({target.X},{target.Y})");
+                }
+
+                if (opponentLost)
+                {
+                    result.GameOverCaller = "You win!";
+                    result.GameOverOpponent = "You lose.";
+                    CleanupGame(g.Id, g);
+                    break;
+                }
+            }
+        }
+
+        result.Col = centerCol;
+        result.Row = centerRow;
+        result.Hit = totalHits > 0;
+        result.Remaining = g.GetRemainingShips(opponentConnId!);
+
+        // Store all hit cells in the result for client display
+        result.AllHitCells = allHitCells;
+
+        if (result.GameOverCaller == null)
+        {
+            result.Disaster = CheckForDisaster(g, g.Id);
+        }
+
+        return result;
+    }
+
+    public async Task SelectRepairTarget(int col, int row)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] SelectRepairTarget called by {connId}: ({col},{row})");
+
+        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        {
+            await SendError(connId, "Game not found");
+            return;
+        }
+
+        var target = new Point(col, row);
+        g.SetRepairTarget(connId, target);
+
+        if (g.ApplyRepair(connId))
+        {
+            Console.WriteLine($"[Server] Repair applied by {connId} at ({col},{row})");
+            await Clients.Caller.SendAsync("RepairApplied", col, row);
+
+            // Notify opponent about the repair (if visible)
+            var opp = g.Other(connId);
+            if (opp != null)
+                await Clients.Client(opp).SendAsync("CellsHealed", new List<Point> { target });
+        }
+        else
+        {
+            await SendError(connId, "Cannot repair at selected position");
+        }
+    }
+
+    public async Task ActivatePowerUp(string powerUpName)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] ActivatePowerUp called by {connId}: {powerUpName}");
+
+        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        {
+            await SendError(connId, "Game not found");
+            return;
+        }
+
+        await ProcessPowerUpActivation(g, connId, powerUpName);
+
+        // Notify both players about power-up activation
+        if (g.PlayerA != null)
+            await Clients.Client(g.PlayerA).SendAsync("PowerUpActivated", powerUpName);
+        if (g.PlayerB != null)
+            await Clients.Client(g.PlayerB).SendAsync("PowerUpActivated", powerUpName);
+    }
+
+
 
     private async Task ProcessMineNotifications(GameInstance g, string gid, string connId, List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMines)
     {
@@ -599,49 +729,72 @@ public class GameHub : Hub
 
     private DisasterResult? CheckForDisaster(GameInstance g, string gid)
     {
-        if (g.GameMode == null) return null;
+        // Check for forced disaster first
+        if (g.ForceDisaster)
+        {
+            g.ForceDisaster = false;
+            Console.WriteLine($"[Server] Forced disaster triggered!");
 
-        if (!g.GameMode.DecrementCountdown()) return null;
+            // Create a disaster immediately
+            var affected = g.GameMode?.CauseDisaster() ?? new List<Point>();
+            if (affected.Count == 0)
+            {
+                Console.WriteLine($"[Server] No cells affected by forced disaster");
+                return null;
+            }
 
-        var gen = g.GameMode.EventGenerator;
-        var affected = gen?.CauseDisaster() ?? new List<Point>();
+            Console.WriteLine($"[Server] Forced disaster affecting {affected.Count} cells");
+            return CreateDisasterResult(g, affected, "Forced Disaster");
+        }
 
-        if (affected.Count == 0) return null;
+        // Check normal disaster countdown
+        if (g.GameMode == null)
+        {
+            Console.WriteLine($"[Server] No GameMode for disaster check");
+            return null;
+        }
 
+        if (!g.GameMode.DecrementCountdown())
+        {
+            Console.WriteLine($"[Server] Countdown not ready: {g.GameMode.EventGenerator?.GetDisasterCountdown() ?? -1}");
+            return null;
+        }
+
+        var affectedNormal = g.GameMode.CauseDisaster();
+        if (affectedNormal.Count == 0)
+        {
+            Console.WriteLine($"[Server] No cells affected by natural disaster");
+            return null;
+        }
+
+        Console.WriteLine($"[Server] Natural disaster affecting {affectedNormal.Count} cells");
+        return CreateDisasterResult(g, affectedNormal, g.GameMode.EventGenerator?.GetEventName());
+    }
+
+    private DisasterResult CreateDisasterResult(GameInstance g, List<Point> affected, string? typeName)
+    {
         var hitsForA = new List<Point>();
         var hitsForB = new List<Point>();
 
         foreach (var p in affected)
         {
-            // Check if disaster hits any ship cells for player A
-            foreach (var ship in g.ShipsA.ToList())
-            {
-                if (ship.GetOccupiedCells().Contains(p))
-                {
-                    hitsForA.Add(p);
-                    break;
-                }
-            }
-            
-            // Check if disaster hits any ship cells for player B
-            foreach (var ship in g.ShipsB.ToList())
-            {
-                if (ship.GetOccupiedCells().Contains(p))
-                {
-                    hitsForB.Add(p);
-                    break;
-                }
-            }
+            if (g.ShipsA.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(p)))
+                hitsForA.Add(p);
+            if (g.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(p)))
+                hitsForB.Add(p);
         }
 
         g.EventInProgress = true;
-        g.GameMode.SelectEventBasedOnTurn(g.GetTurnCount());
 
-        if (affected.Count == 0) return null;
+        // Only reset for natural disasters, not forced ones
+        if (typeName != "Forced Disaster")
+        {
+            g.GameMode?.SelectEventBasedOnTurn(g.GetTurnCount());
+        }
 
         return new DisasterResult
         {
-            TypeName = gen?.GetEventName(),
+            TypeName = typeName,
             Affected = affected,
             HitsForA = hitsForA,
             HitsForB = hitsForB
@@ -656,28 +809,54 @@ public class GameHub : Hub
             return;
         }
 
-        // Send move updates
-        await Clients.Caller.SendAsync("MoveResult", result.Col, result.Row, result.Hit, result.Remaining);
+        // Send move updates - for MiniNuke, send all hit cells
+        if (result.AllHitCells.Any())
+        {
+            // MiniNuke - send all individual hits
+            foreach (var hitCell in result.AllHitCells)
+            {
+                await Clients.Caller.SendAsync("MoveResult", hitCell.X, hitCell.Y, true, result.Remaining);
+            }
+
+            await Clients.Caller.SendAsync("MoveResult", result.Col, result.Row, result.Hit, result.Remaining);
+        }
+        else
+        {
+            // Normal shot
+            await Clients.Caller.SendAsync("MoveResult", result.Col, result.Row, result.Hit, result.Remaining);
+        }
 
         var opp = g.Other(connId);
         if (opp != null)
-            await Clients.Client(opp).SendAsync("OpponentMoved", result.Col, result.Row, result.Hit);
+        {
+            if (result.AllHitCells.Any())
+            {
+                foreach (var hitCell in result.AllHitCells)
+                {
+                    await Clients.Client(opp).SendAsync("OpponentMoved", hitCell.X, hitCell.Y, true);
+                }
+            }
+            else
+            {
+                await Clients.Client(opp).SendAsync("OpponentMoved", result.Col, result.Row, result.Hit);
+            }
+        }
 
-        // Turn updates
+        await BroadcastActionPoints(g);
         await BroadcastTurnUpdates(gid, g);
 
-        // Disaster updates
         if (result.Disaster != null)
+        {
+            Console.WriteLine($"[Server] Processing disaster in background");
             await HandleDisasterNotifications(g, gid, result.Disaster);
+        }
 
-        // Game over
         if (result.GameOverCaller != null)
         {
             await Clients.Caller.SendAsync("GameOver", result.GameOverCaller);
             if (opp != null) await Clients.Client(opp).SendAsync("GameOver", result.GameOverOpponent);
         }
 
-        // Countdown
         await BroadcastCountdown(g, g.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1);
     }
 
@@ -700,10 +879,17 @@ public class GameHub : Hub
     {
         Console.WriteLine($"[Server] Sending DisasterOccurred to players (type={disaster.TypeName})");
 
+        // Set event in progress IMMEDIATELY at the start
+        lock (_lock)
+        {
+            g.EventInProgress = true;
+            Console.WriteLine($"[Server] EventInProgress set to TRUE for game {gid}");
+        }
+
+        // Apply disaster effects and send notifications
         if (g.PlayerA != null)
         {
             List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMinesA;
-
             g.ApplyDisasterWithMines(g.PlayerA, disaster.Affected, out triggeredMinesA);
 
             if (triggeredMinesA.Any())
@@ -718,7 +904,6 @@ public class GameHub : Hub
         if (g.PlayerB != null)
         {
             List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMinesB;
-
             g.ApplyDisasterWithMines(g.PlayerB, disaster.Affected, out triggeredMinesB);
 
             if (triggeredMinesB.Any())
@@ -734,42 +919,13 @@ public class GameHub : Hub
         bool playerALost = g.PlayerA != null && g.GetRemainingShips(g.PlayerA) == 0;
         bool playerBLost = g.PlayerB != null && g.GetRemainingShips(g.PlayerB) == 0;
 
-        // Send disaster notifications
-        if (g.PlayerA != null)
-            await Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForA, disaster.TypeName);
-        if (g.PlayerB != null)
-            await Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForB, disaster.TypeName);
-
-        // Send updated remaining ship counts
-        if (g.PlayerA != null)
-            await Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerA));
-        if (g.PlayerB != null)
-            await Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerB));
-
-        // Send disaster hit notifications so players can see hits on their opponent's board
-        // Player A should see hits that occurred on Player B's board (HitsForB) - these show on opponent board (right side)
-        if (g.PlayerA != null && disaster.HitsForB.Count > 0)
-        {
-            foreach (var hit in disaster.HitsForB)
-            {
-                await Clients.Client(g.PlayerA).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
-            }
-        }
-        // Player B should see hits that occurred on Player A's board (HitsForA) - these show on opponent board (right side)
-        if (g.PlayerB != null && disaster.HitsForA.Count > 0)
-        {
-            foreach (var hit in disaster.HitsForA)
-            {
-                await Clients.Client(g.PlayerB).SendAsync("OpponentHitByDisaster", hit.X, hit.Y);
-            }
-        }
-
-        // Handle game over from disaster
+        // Handle game over from disaster FIRST
         if (playerALost && !playerBLost)
         {
             if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "You lose.");
             if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "You win!");
             CleanupGame(gid, g);
+            lock (_lock) { g.EventInProgress = false; }
             return;
         }
         else if (playerBLost && !playerALost)
@@ -777,6 +933,7 @@ public class GameHub : Hub
             if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "You win!");
             if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "You lose.");
             CleanupGame(gid, g);
+            lock (_lock) { g.EventInProgress = false; }
             return;
         }
         else if (playerALost && playerBLost)
@@ -784,33 +941,76 @@ public class GameHub : Hub
             if (g.PlayerA != null) await Clients.Client(g.PlayerA).SendAsync("GameOver", "Draw - both players eliminated!");
             if (g.PlayerB != null) await Clients.Client(g.PlayerB).SendAsync("GameOver", "Draw - both players eliminated!");
             CleanupGame(gid, g);
+            lock (_lock) { g.EventInProgress = false; }
             return;
         }
 
-        // Schedule animation cleanup (non-blocking)
-        try
-        {
-            var affectedCount = disaster.Affected.Count;
-            var animationMs = affectedCount * (300 + 120) + 400;
+        // Send all disaster notifications in parallel
+        var notificationTasks = new List<Task>();
 
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(animationMs);
-                    lock (_lock) { g.EventInProgress = false; }
-                    Console.WriteLine($"[Server] Disaster finished for game={gid}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Server] Disaster finish task failed: {ex}");
-                }
-            });
-        }
-        catch (Exception ex)
+        // Send disaster notifications
+        if (g.PlayerA != null)
+            notificationTasks.Add(Clients.Client(g.PlayerA).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForA, disaster.TypeName));
+        if (g.PlayerB != null)
+            notificationTasks.Add(Clients.Client(g.PlayerB).SendAsync("DisasterOccurred", disaster.Affected, disaster.HitsForB, disaster.TypeName));
+
+        // Send updated remaining ship counts
+        if (g.PlayerA != null)
+            notificationTasks.Add(Clients.Client(g.PlayerA).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerA)));
+        if (g.PlayerB != null)
+            notificationTasks.Add(Clients.Client(g.PlayerB).SendAsync("DisasterResult", g.GetRemainingShips(g.PlayerB)));
+
+        // Send disaster hit notifications
+        if (g.PlayerA != null && disaster.HitsForB.Count > 0)
         {
-            Console.WriteLine($"[Server] Failed to schedule disaster finish: {ex}");
+            foreach (var hit in disaster.HitsForB)
+            {
+                notificationTasks.Add(Clients.Client(g.PlayerA).SendAsync("OpponentHitByDisaster", hit.X, hit.Y));
+            }
         }
+        if (g.PlayerB != null && disaster.HitsForA.Count > 0)
+        {
+            foreach (var hit in disaster.HitsForA)
+            {
+                notificationTasks.Add(Clients.Client(g.PlayerB).SendAsync("OpponentHitByDisaster", hit.X, hit.Y));
+            }
+        }
+
+        await Task.WhenAll(notificationTasks);
+        Console.WriteLine($"[Server] All disaster notifications sent for game {gid}");
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var affectedCount = disaster.Affected.Count;
+                var animationMs = Math.Max(2000, affectedCount * 200 + 1000); // Min 2 seconds, max ~5 seconds
+
+                Console.WriteLine($"[Server] Disaster animation started for {animationMs}ms, affected cells: {affectedCount}");
+
+                await Task.Delay(animationMs);
+
+                lock (_lock)
+                {
+                    g.EventInProgress = false;
+                    Console.WriteLine($"[Server] ✅ Disaster animation finished for game={gid}, EventInProgress={g.EventInProgress}");
+                    Console.WriteLine($"[Server] Post-disaster turn state: CurrentTurn={g.CurrentTurn}");
+                }
+
+                if (g.PlayerA != null)
+                    await Clients.Client(g.PlayerA).SendAsync("DisasterFinished");
+                if (g.PlayerB != null)
+                    await Clients.Client(g.PlayerB).SendAsync("DisasterFinished");
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server] ❌ Disaster animation task failed: {ex}");
+                lock (_lock) { g.EventInProgress = false; }
+            }
+        });
+
+        Console.WriteLine($"[Server] Disaster handling completed (animation running in background) for game {gid}");
     }
 
     private async Task BroadcastCountdown(GameInstance g, int countdown)
@@ -885,5 +1085,77 @@ public class GameHub : Hub
     {
         Console.WriteLine($"Received from {msg.From}: {msg.Text}");
         await Clients.All.SendAsync("ReceiveHello", msg);
+    }
+
+
+    private async Task ProcessPowerUpActivation(GameInstance g, string connId, string powerUpName)
+    {
+        var powerUp = PowerUpFactory.CreatePowerUp(powerUpName);
+        var playerAP = g.GetActionPoints(connId);
+
+        if (playerAP < powerUp.Cost)
+        {
+            await SendError(connId, $"Not enough action points for {powerUpName}. Need {powerUp.Cost}, have {playerAP}");
+            return;
+        }
+
+        g.DeductActionPoints(connId, powerUp.Cost);
+
+        switch (powerUpName.ToLower())
+        {
+            case "initiatedisaster":
+                g.ForceDisaster = true;
+                Console.WriteLine($"[Server] 🔥 Forced disaster activated by {connId}");
+                var disaster = CheckForDisaster(g, g.Id);
+                if (disaster != null)
+                {
+                    Console.WriteLine($"[Server] 🔥 Immediately triggering forced disaster");
+                    await HandleDisasterNotifications(g, g.Id, disaster);
+                }
+                break;
+
+            case "mininuke":
+                g.SetMiniNuke(connId, true);
+                Console.WriteLine($"[Server] MiniNuke activated by {connId}");
+                break;
+
+            case "repair":
+                Console.WriteLine($"[Server] Repair power-up activated by {connId}");
+                // Auto-heal one damaged cell
+                var hitCells = connId == g.PlayerA ? g.HitCellsA : g.HitCellsB;
+                var ships = connId == g.PlayerA ? g.ShipsA : g.ShipsB;
+
+                var damagedCells = hitCells
+                    .Where(hit => ships.Any(ship =>
+                        ship.IsPlaced && ship.GetOccupiedCells().Contains(hit)))
+                    .ToList();
+
+                if (damagedCells.Any())
+                {
+                    var cellToHeal = damagedCells.First();
+                    hitCells.Remove(cellToHeal);
+                    Console.WriteLine($"[Server] Auto-healed cell at ({cellToHeal.X},{cellToHeal.Y}) for {connId}");
+
+                    // Notify client about the healed cell
+                    await Clients.Caller.SendAsync("CellsHealed", new List<Point> { cellToHeal });
+                }
+                else
+                {
+                    Console.WriteLine($"[Server] No damaged cells to heal for {connId}");
+                }
+                break;
+        }
+
+        await BroadcastActionPoints(g);
+    }
+
+
+
+    private async Task BroadcastActionPoints(GameInstance g)
+    {
+        if (g.PlayerA != null)
+            await Clients.Client(g.PlayerA).SendAsync("ActionPointsUpdated", g.GetActionPoints(g.PlayerA));
+        if (g.PlayerB != null)
+            await Clients.Client(g.PlayerB).SendAsync("ActionPointsUpdated", g.GetActionPoints(g.PlayerB));
     }
 }
