@@ -39,6 +39,9 @@ namespace BattleShips.Core
 
         public event Action<List<Point>>? MeteorStrike;
 
+        public event Action<int>? ActionPointsUpdated;
+        public event Action<string>? PowerUpActivated;
+
 
         public async Task ConnectAsync(string url)
         {
@@ -113,6 +116,18 @@ namespace BattleShips.Core
             Console.WriteLine("[GameClient] Hub connection started");
             await _conn.SendAsync("Ping", "client-hello");
             Console.WriteLine("[GameClient] Ping sent");
+
+            _conn.On<int>("ActionPointsUpdated", (ap) =>
+            {
+                Console.WriteLine($"[GameClient] ActionPointsUpdated: {ap}");
+                ActionPointsUpdated?.Invoke(ap);
+            });
+
+            _conn.On<string>("PowerUpActivated", (powerUp) =>
+            {
+                Console.WriteLine($"[GameClient] PowerUpActivated: {powerUp}");
+                PowerUpActivated?.Invoke(powerUp);
+            });
         }
 
         public Task PlaceShips(List<Point> ships)
@@ -162,6 +177,11 @@ namespace BattleShips.Core
             return _conn.SendAsync("DebugGameState");
         }
 
-
+        public Task ActivatePowerUp(string powerUpName)
+        {
+            Console.WriteLine($"[GameClient] Sending ActivatePowerUp: {powerUpName}");
+            if (_conn == null) throw new InvalidOperationException("Not connected");
+            return _conn.SendAsync("ActivatePowerUp", powerUpName);
+        }
     }
 }

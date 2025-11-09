@@ -28,13 +28,21 @@ namespace BattleShips.Core
         public bool ShipsReadyA { get; set; }
         public bool ShipsReadyB { get; set; }
 
+        // Power-up properties
+        public int ActionPointsA { get; set; }
+        public int ActionPointsB { get; set; }
+        public bool ForceDisaster { get; set; }
+        public bool HasMiniNukeA { get; set; }
+        public bool HasMiniNukeB { get; set; }
+        public bool IsSelectingRepairA { get; set; }
+        public bool IsSelectingRepairB { get; set; }
+        public Point? RepairTargetA { get; set; }
+        public Point? RepairTargetB { get; set; }
+
         public bool AllShipsPlaced => ShipsReadyA && ShipsReadyB;
         public bool AllMinesPlaced => MinesReadyA && MinesReadyB;
 
-
-
         private int TurnCount = 0;
-
 
         public List<NavalMine> MinesA { get; set; } = new();
         public List<NavalMine> MinesB { get; set; } = new();
@@ -42,24 +50,7 @@ namespace BattleShips.Core
         public bool MinesReadyA { get; set; } = false;
         public bool MinesReadyB { get; set; } = false;
 
-
-        public void SetPlayerMines(string connId, List<NavalMine> mines)
-        {
-            if (connId == PlayerA)
-            {
-                MinesA = mines;
-                MinesReadyA = true;
-            }
-            else if (connId == PlayerB)
-            {
-                MinesB = mines;
-                MinesReadyB = true;
-            }
-        }
-
-
         public bool MinePlacementStarted { get; set; } = false;
-
 
         public GameInstance(string id)
         {
@@ -72,6 +63,94 @@ namespace BattleShips.Core
 
         public void IncrementTurnCount() => TurnCount++;
         public int GetTurnCount() => TurnCount;
+
+        // Action Points management
+        public void AddActionPoints(string connId, int points)
+        {
+            if (connId == PlayerA)
+                ActionPointsA += points;
+            else if (connId == PlayerB)
+                ActionPointsB += points;
+        }
+
+        public int GetActionPoints(string connId)
+        {
+            return connId == PlayerA ? ActionPointsA :
+                   connId == PlayerB ? ActionPointsB : 0;
+        }
+
+        public bool CanActivatePowerUp(string connId, int cost)
+        {
+            return GetActionPoints(connId) >= cost;
+        }
+
+        public void DeductActionPoints(string connId, int cost)
+        {
+            if (connId == PlayerA)
+                ActionPointsA = Math.Max(0, ActionPointsA - cost);
+            else if (connId == PlayerB)
+                ActionPointsB = Math.Max(0, ActionPointsB - cost);
+        }
+
+        // MiniNuke management
+        public bool HasMiniNuke(string connId)
+        {
+            return connId == PlayerA ? HasMiniNukeA :
+                   connId == PlayerB ? HasMiniNukeB : false;
+        }
+
+        public void SetMiniNuke(string connId, bool value)
+        {
+            if (connId == PlayerA) HasMiniNukeA = value;
+            else if (connId == PlayerB) HasMiniNukeB = value;
+        }
+
+        // Repair management
+        public void StartRepairSelection(string connId)
+        {
+            if (connId == PlayerA) IsSelectingRepairA = true;
+            else if (connId == PlayerB) IsSelectingRepairB = true;
+        }
+
+        public void SetRepairTarget(string connId, Point target)
+        {
+            if (connId == PlayerA)
+            {
+                RepairTargetA = target;
+                IsSelectingRepairA = false;
+            }
+            else if (connId == PlayerB)
+            {
+                RepairTargetB = target;
+                IsSelectingRepairB = false;
+            }
+        }
+
+        public bool ApplyRepair(string connId)
+        {
+            var repairTarget = connId == PlayerA ? RepairTargetA : RepairTargetB;
+            var hitCells = connId == PlayerA ? HitCellsA : HitCellsB;
+
+            if (repairTarget.HasValue && hitCells.Contains(repairTarget.Value))
+            {
+                hitCells.Remove(repairTarget.Value);
+
+                // Clear repair state
+                if (connId == PlayerA)
+                {
+                    RepairTargetA = null;
+                    IsSelectingRepairA = false;
+                }
+                else if (connId == PlayerB)
+                {
+                    RepairTargetB = null;
+                    IsSelectingRepairB = false;
+                }
+
+                return true;
+            }
+            return false;
+        }
 
         public void RemovePlayer(string connId)
         {
@@ -138,12 +217,12 @@ namespace BattleShips.Core
             if (connId == PlayerA)
             {
                 ShipsA = ships;
-                ReadyA = true; 
+                ReadyA = true;
             }
             else if (connId == PlayerB)
             {
                 ShipsB = ships;
-                ReadyB = true; 
+                ReadyB = true;
             }
         }
 
@@ -207,10 +286,7 @@ namespace BattleShips.Core
                 CurrentTurn = PlayerA;
         }
 
-
         // Call when a shot happens: returns whether it was a hit AND any mine triggered info
-        // Note: this wraps RegisterShot: it checks for mine triggers before/after recording hits as you prefer.
-        // This implementation triggers anti-enemy mines if shot lands on mine's position.
         public bool RegisterShotWithMines(string opponentConnId, Point shot, out bool opponentLost, out List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMines)
         {
             triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
@@ -259,6 +335,14 @@ namespace BattleShips.Core
             {
                 opponentHitCells.Add(shot);
                 Console.WriteLine($"[Server] 🎯 Shot hit a ship!");
+
+                // Award 1 AP to the shooter for hitting a ship
+                var shooterConnId = Other(opponentConnId);
+                if (shooterConnId != null)
+                {
+                    AddActionPoints(shooterConnId, 1);
+                    Console.WriteLine($"[Server] Awarded 1 AP to {shooterConnId} for hit. Total AP: {GetActionPoints(shooterConnId)}");
+                }
             }
             else
             {
@@ -341,6 +425,18 @@ namespace BattleShips.Core
             Console.WriteLine($"[GameInstance] Total mines triggered: {triggeredMines.Count}");
         }
 
-
+        public void SetPlayerMines(string connId, List<NavalMine> mines)
+        {
+            if (connId == PlayerA)
+            {
+                MinesA = mines;
+                MinesReadyA = true;
+            }
+            else if (connId == PlayerB)
+            {
+                MinesB = mines;
+                MinesReadyB = true;
+            }
+        }
     }
 }
