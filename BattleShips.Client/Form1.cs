@@ -1104,55 +1104,80 @@ namespace BattleShips.Client
 
         private void DrawPowerUpUI(Graphics g, Font font)
         {
-            // Draw AP counter
-            using var apFont = new Font(font.FontFamily, 12, FontStyle.Bold);
-            using var apBrush = new SolidBrush(Color.Gold);
-            g.DrawString(_model.ActionPointsText, apFont, apBrush, _renderer.Margin, 70);
-
-            // Initialize powerup button rectangles if needed
             if (_powerUpButtonRects.Count != _model.AvailablePowerUps.Count)
             {
                 InitializePowerUpButtons();
             }
 
+            // Draw AP counter centered between boards
+            using var apFont = new Font(font.FontFamily, 14, FontStyle.Bold);
+            using var apBrush = new SolidBrush(Color.Gold);
+
+            int centerX = _renderer.Margin + Board.Size * _renderer.Cell + (_renderer.Margin / 2);
+            int uiStartY = _renderer.Margin + 30;
+
+            var apTextSize = g.MeasureString(_model.ActionPointsText, apFont);
+            g.DrawString(_model.ActionPointsText, apFont, apBrush, centerX - apTextSize.Width / 2, uiStartY);
+
+            // Use smaller font for buttons
+            using var buttonFont = new Font(font.FontFamily, 8, FontStyle.Regular);
+
             // Draw powerup buttons
             for (int i = 0; i < _model.AvailablePowerUps.Count; i++)
             {
+                if (i >= _powerUpButtonRects.Count) continue;
+
                 var powerUp = _model.AvailablePowerUps[i];
-
-                if (i >= _powerUpButtonRects.Count)
-                    continue;
-
                 var rect = _powerUpButtonRects[i];
 
                 bool canActivate = _model.CanActivatePowerUp(powerUp);
-                var buttonColor = canActivate ? Color.FromArgb(80, 180, 80) : Color.FromArgb(120, 120, 120);
+                var buttonColor = canActivate ? Color.FromArgb(70, 170, 70) : Color.FromArgb(100, 100, 100);
+                var textColor = canActivate ? Color.White : Color.LightGray;
 
                 using var buttonBrush = new SolidBrush(buttonColor);
-                using var textBrush = new SolidBrush(Color.White);
+                using var textBrush = new SolidBrush(textColor);
 
                 g.FillRectangle(buttonBrush, rect);
-                g.DrawRectangle(Pens.White, rect);
 
-                var text = $"{powerUp.Name} ({powerUp.Cost} AP)";
-                g.DrawString(text, font, textBrush, rect.X + 5, rect.Y + 12);
+                if (canActivate)
+                    g.DrawRectangle(Pens.Lime, rect);
+                else
+                    g.DrawRectangle(Pens.Gray, rect);
+
+                var shortText = GetShortPowerUpText(powerUp.Name, powerUp.Cost);
+                var textSize = g.MeasureString(shortText, buttonFont);
+                g.DrawString(shortText, buttonFont, textBrush,
+                    rect.X + (rect.Width - textSize.Width) / 2,
+                    rect.Y + (rect.Height - textSize.Height) / 2);
             }
+        }
+
+        private string GetShortPowerUpText(string powerUpName, int cost)
+        {
+            return powerUpName switch
+            {
+                "InitiateDisaster" => $"Disaster\n{cost}",
+                "MiniNuke" => $"Nuke\n{cost}",
+                "Repair" => $"Repair\n{cost}",
+                _ => $"{powerUpName}\n{cost}"
+            };
         }
 
         private void InitializePowerUpButtons()
         {
             _powerUpButtonRects.Clear();
 
-            int buttonWidth = 150;
-            int buttonHeight = 40;
-            int startX = _renderer.Margin;
-            int startY = 100; // Below AP counter
-            int spacing = 10;
+            // Much smaller buttons
+            int buttonWidth = 60;  // Reduced width
+            int buttonHeight = 30; // Reduced height
+            int centerX = _renderer.Margin + Board.Size * _renderer.Cell + (_renderer.Margin / 2);
+            int startY = _renderer.Margin + 60; // Closer to AP counter
+            int spacing = 6; // Tighter spacing
 
             for (int i = 0; i < _model.AvailablePowerUps.Count; i++)
             {
                 var rect = new Rectangle(
-                    startX,
+                    centerX - buttonWidth / 2,
                     startY + i * (buttonHeight + spacing),
                     buttonWidth,
                     buttonHeight
