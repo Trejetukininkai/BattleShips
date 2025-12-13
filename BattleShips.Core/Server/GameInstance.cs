@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 
 namespace BattleShips.Core
@@ -9,8 +10,28 @@ namespace BattleShips.Core
     public class GameInstance
     {
         public string Id { get; }
-        public string? PlayerA { get; set; }
-        public string? PlayerB { get; set; }
+        public virtual string? PlayerA { get; set; }
+        public virtual string? PlayerB { get; set; }
+
+        // Logging support
+        private LoggingProxy? _loggingProxy;
+
+        /// <summary>
+        /// Enables logging for this game instance
+        /// </summary>
+        public void EnableLogging(string logFilePath)
+        {
+            _loggingProxy = new LoggingProxy(this, logFilePath);
+        }
+
+        /// <summary>
+        /// Logs a message if logging is enabled
+        /// </summary>
+        protected void Log(string message)
+        {
+            // The LoggingProxy handles actual logging
+            // This method is just a placeholder for subclasses
+        }
         public List<IShip> ShipsA { get; set; } = new();
         public List<IShip> ShipsB { get; set; } = new();
         public ShipClass? ClassA { get; set; }
@@ -289,6 +310,7 @@ namespace BattleShips.Core
         // Call when a shot happens: returns whether it was a hit AND any mine triggered info
         public bool RegisterShotWithMines(string opponentConnId, Point shot, out bool opponentLost, out List<(Guid mineId, MineCategory category, List<Point> effectPoints)> triggeredMines)
         {
+
             triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
             opponentLost = false;
 
