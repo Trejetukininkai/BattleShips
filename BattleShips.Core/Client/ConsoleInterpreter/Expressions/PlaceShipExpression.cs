@@ -52,13 +52,16 @@ namespace BattleShips.Core
                     return $"Cannot place ships now. Current state: {ctx.GameModel.State}";
                 }
 
+                // Normalize ship type aliases
+                var normalizedType = NormalizeShipType(_shipType);
+
                 // Find the ship by type name
                 var ship = ctx.GameModel.YourShips.FirstOrDefault(s =>
-                    s.GetType().Name.Contains(_shipType, StringComparison.OrdinalIgnoreCase) && !s.IsPlaced);
+                    s.GetType().Name.Equals(normalizedType, StringComparison.OrdinalIgnoreCase) && !s.IsPlaced);
 
                 if (ship == null)
                 {
-                    return $"No unplaced ship of type '{_shipType}' found.";
+                    return $"No unplaced ship of type '{_shipType}' found. Available types: AircraftCarrier (or Carrier), Battleship, Cruiser, Destroyer";
                 }
 
                 // Set orientation
@@ -94,10 +97,28 @@ namespace BattleShips.Core
             }
         }
 
+        private static string NormalizeShipType(string shipType)
+        {
+            // Map common aliases to actual class names
+            return shipType.ToLower() switch
+            {
+                "carrier" => "AircraftCarrier",
+                "aircraftcarrier" => "AircraftCarrier",
+                "battleship" => "Battleship",
+                "cruiser" => "Cruiser",
+                "destroyer" => "Destroyer",
+                "submarine" => "Cruiser",  // Alias for compatibility
+                "patrolboat" => "Destroyer", // Alias for compatibility
+                "patrol" => "Destroyer",
+                _ => shipType // Return original if no match
+            };
+        }
+
         public string GetHelp()
         {
             return "place ship <type> <x> <y> <H|V> - Place a ship (H=Horizontal, V=Vertical)\n" +
-                   "                                    Types: Carrier, Battleship, Destroyer, Submarine, PatrolBoat\n" +
+                   "                                    Types: Carrier, Battleship, Cruiser, Destroyer\n" +
+                   "                                    Fleet: 1x Carrier(5), 1x Battleship(4), 2x Cruiser(3), 1x Destroyer(2)\n" +
                    "                                    X: A-J (columns), Y: 1-10 (rows)\n" +
                    "                                    Example: place ship Carrier A 1 H";
         }

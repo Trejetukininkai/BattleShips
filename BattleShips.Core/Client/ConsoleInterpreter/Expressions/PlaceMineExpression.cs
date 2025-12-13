@@ -55,7 +55,7 @@ namespace BattleShips.Core
                     return $"Mine already exists at {coll}{roww}.";
                 }
 
-                // Place mine with default category (you may want to allow specifying category)
+                // Place mine with default category
                 ctx.GameModel.SelectedMineCategory = MineCategory.AntiDisaster_Restore;
                 ctx.GameModel.PlaceMine(position);
 

@@ -19,7 +19,8 @@ namespace BattleShips.Core
                    "Ship & Mine Placement:\n" +
                    "  place auto - Auto-place all ships (recommended!)\n" +
                    "  place ship <type> <x> <y> <H|V> - Place a ship manually\n" +
-                   "    Types: Carrier, Battleship, Destroyer, Submarine, PatrolBoat\n" +
+                   "   Types: Carrier, Battleship, Cruiser, Destroyer\n" +
+                   "   Fleet: 1x Carrier(5), 1x Battleship(4), 2x Cruiser(3), 1x Destroyer(2)\n" +
                    "    X: A-J (columns), Y: 1-10 (rows), H=Horizontal, V=Vertical\n" +
                    "    Example: place ship Carrier A 1 H\n" +
                    "  place mine <x> <y> - Place a naval mine (max 3)\n" +
