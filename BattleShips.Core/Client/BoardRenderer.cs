@@ -1,4 +1,5 @@
 ﻿using BattleShips.Core;
+using BattleShips.Core.Client;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -240,21 +241,11 @@ namespace BattleShips.Core
 
         private void DrawShips(Graphics g, GameModel model, Rectangle boardRect)
         {
-            using var shipBrush = new SolidBrush(ShipColor);
-            using var shipBorderBrush = new SolidBrush(Color.FromArgb(200, 39, 174, 96)); // Keep ship border consistent
-
+            // VISITOR PATTERN: Use visitor to render ships
+            var visitor = new RenderingVisitor(g, Cell, ShipColor, MineColor);
             foreach (var ship in model.YourShips.Where(s => s.IsPlaced))
             {
-                foreach (var cell in ship.GetOccupiedCells())
-                {
-                    var x = boardRect.X + cell.X * Cell;
-                    var y = boardRect.Y + cell.Y * Cell;
-                    g.FillRectangle(shipBrush, x + 4, y + 4, Cell - 8, Cell - 8);
-                    g.FillRectangle(shipBorderBrush, x + 4, y + 4, Cell - 8, 2);
-                    g.FillRectangle(shipBorderBrush, x + 4, y + Cell - 6, Cell - 8, 2);
-                    g.FillRectangle(shipBorderBrush, x + 4, y + 4, 2, Cell - 8);
-                    g.FillRectangle(shipBorderBrush, x + Cell - 6, y + 4, 2, Cell - 8);
-                }
+                visitor.VisitShip(ship, model, boardRect);
             }
         }
 
@@ -264,106 +255,51 @@ namespace BattleShips.Core
             if (previewShip == null) return;
             if (previewShip.Position.X < 0 || previewShip.Position.Y < 0) return;
 
+            // VISITOR PATTERN: Use visitor to render dragged ship preview
             bool valid = model.CanPlaceShip(previewShip, previewShip.Position);
-            var color = valid ? Color.FromArgb(120, 144, 238, 144) : Color.FromArgb(120, 255, 100, 100);
-
-            using var brush = new SolidBrush(color);
-            using var borderBrush = new SolidBrush(Color.FromArgb(150, 255, 255, 255));
-
-            foreach (var cell in previewShip.GetOccupiedCells())
-            {
-                if (cell.X < 0 || cell.X >= Board.Size || cell.Y < 0 || cell.Y >= Board.Size) continue;
-                var x = boardRect.X + cell.X * Cell;
-                var y = boardRect.Y + cell.Y * Cell;
-                g.FillRectangle(brush, x + 2, y + 2, Cell - 4, Cell - 4);
-                g.FillRectangle(borderBrush, x + 2, y + 2, Cell - 4, 2);
-                g.FillRectangle(borderBrush, x + 2, y + Cell - 4, Cell - 4, 2);
-                g.FillRectangle(borderBrush, x + 2, y + 2, 2, Cell - 4);
-                g.FillRectangle(borderBrush, x + Cell - 4, y + 2, 2, Cell - 4);
-            }
+            var visitor = new RenderingVisitor(g, Cell, ShipColor, MineColor);
+            visitor.VisitDraggedShip(previewShip, valid, model, boardRect);
         }
 
         private void DrawOpponentShots(Graphics g, GameModel model, Rectangle boardRect)
         {
+            // VISITOR PATTERN: Use visitor to render opponent shots
+            var visitor = new RenderingVisitor(g, Cell, ShipColor, MineColor);
             foreach (var p in model.YourHitsByOpponent)
             {
-                var x = boardRect.X + p.X * Cell;
-                var y = boardRect.Y + p.Y * Cell;
                 var wasShip = model.YourShips.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(p));
-
-                if (wasShip)
-                {
-                    using var hitBrush = new SolidBrush(Color.FromArgb(220, 231, 76, 60));
-                    g.FillEllipse(hitBrush, x + 8, y + 8, Cell - 16, Cell - 16);
-                    using var hitBorder = new Pen(Color.FromArgb(255, 192, 57, 43), 2);
-                    g.DrawEllipse(hitBorder, x + 8, y + 8, Cell - 16, Cell - 16);
-                }
-                else
-                {
-                    using var missBrush = new SolidBrush(Color.FromArgb(150, 108, 122, 137));
-                    g.FillEllipse(missBrush, x + 12, y + 12, Cell - 24, Cell - 24);
-                    using var missBorder = new Pen(Color.FromArgb(200, 90, 100, 110), 1);
-                    g.DrawEllipse(missBorder, x + 12, y + 12, Cell - 24, Cell - 24);
-                }
+                visitor.VisitOpponentHit(p, wasShip, model, boardRect);
             }
         }
 
         private void DrawFiredShots(Graphics g, GameModel model, Rectangle boardRect)
         {
+            // VISITOR PATTERN: Use visitor to render fired shots
+            var visitor = new RenderingVisitor(g, Cell, ShipColor, MineColor);
             foreach (var p in model.YourFired)
             {
-                var x = boardRect.X + p.X * Cell;
-                var y = boardRect.Y + p.Y * Cell;
                 var isHit = model.YourFiredHits.Contains(p);
-
-                if (isHit)
-                {
-                    using var hitBrush = new SolidBrush(Color.FromArgb(220, 230, 126, 34));
-                    g.FillEllipse(hitBrush, x + 8, y + 8, Cell - 16, Cell - 16);
-                    using var hitBorder = new Pen(Color.FromArgb(255, 211, 84, 0), 2);
-                    g.DrawEllipse(hitBorder, x + 8, y + 8, Cell - 16, Cell - 16);
-                }
-                else
-                {
-                    using var missBrush = new SolidBrush(Color.FromArgb(120, 149, 165, 166));
-                    g.FillEllipse(missBrush, x + 12, y + 12, Cell - 24, Cell - 24);
-                    using var missBorder = new Pen(Color.FromArgb(180, 127, 140, 141), 1);
-                    g.DrawEllipse(missBorder, x + 12, y + 12, Cell - 24, Cell - 24);
-                }
+                visitor.VisitFiredShot(p, isHit, model, boardRect);
             }
         }
 
         private void DrawAnimatedDisasters(Graphics g, GameModel model, Rectangle boardRect)
         {
+            // VISITOR PATTERN: Use visitor to render animated disaster cells
+            var visitor = new RenderingVisitor(g, Cell, ShipColor, MineColor);
             foreach (var p in model.AnimatedCells)
             {
-                if (p.X < 0 || p.X >= Board.Size || p.Y < 0 || p.Y >= Board.Size) continue;
-                var x = boardRect.X + p.X * Cell;
-                var y = boardRect.Y + p.Y * Cell;
-                var centerX = x + Cell / 2f;
-                var centerY = y + Cell / 2f;
-
-                var time = Environment.TickCount / 100.0f;
-                var pulse = (float)(0.5 + 0.5 * Math.Sin(time * 0.8));
-                var size = Cell * (0.3f + pulse * 0.4f);
-
-                using (var outerBrush = new SolidBrush(Color.FromArgb((int)(120 * pulse), 255, 100, 0)))
-                {
-                    float outerSize = size * 1.8f;
-                    g.FillEllipse(outerBrush, centerX - outerSize / 2, centerY - outerSize / 2, outerSize, outerSize);
-                }
+                visitor.VisitAnimatedCell(p, model, boardRect);
             }
         }
 
         private void DrawMines(Graphics g, GameModel model, Rectangle boardRect)
         {
-            using var brush = new SolidBrush(MineColor);
-
+            // VISITOR PATTERN: Use visitor to render mines
+            var visitor = new RenderingVisitor(g, Cell, ShipColor, MineColor);
             foreach (var mine in model.YourMines)
             {
-                var x = boardRect.X + mine.Position.X * Cell;
-                var y = boardRect.Y + mine.Position.Y * Cell;
-                g.FillEllipse(brush, x + 10, y + 10, Cell - 20, Cell - 20);
+                visitor.VisitMine(mine, model, boardRect);
             }
         }
 
