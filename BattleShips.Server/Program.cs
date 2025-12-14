@@ -73,7 +73,17 @@ public class GameHub : Hub
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] OnConnectedAsync: conn={connId}");
-        
+
+        // Check if this player is already assigned to a game (reconnection in progress)
+        // If so, skip the assignment logic as it will be handled by ReconnectToGame
+        var existingGameId = _gameManager.GetPlayerGameId(connId);
+        if (existingGameId != null)
+        {
+            Console.WriteLine($"[Server] Player {connId} already assigned to game {existingGameId}, skipping OnConnectedAsync assignment");
+            await base.OnConnectedAsync();
+            return;
+        }
+
         // Use GameManager to assign player to game
         var assigned = _gameManager.AssignPlayerToGame(connId);
 
@@ -86,42 +96,51 @@ public class GameHub : Hub
         }
         else if (assigned.PlayerCount == 2)
         {
-            // both players connected -> start placement phase with 60s timer
-            assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(ShipPlacementTimeSeconds);
-            // notify both clients
-            var playerA = assigned.PlayerA;
-            var playerB = assigned.PlayerB;
-            if (playerA != null)
-                await Clients.Client(playerA).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
-            if (playerB != null)
-                await Clients.Client(playerB).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
-
-            // start a background task to enforce placement timeout
-            var gameId = assigned.Id; // capture game id before async task
-            _ = Task.Run(async () =>
+            // Check if this is a reconnection to an already-started game
+            if (assigned.Started)
             {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(ShipPlacementTimeSeconds));
-                    Console.WriteLine($"[Server] Timeout expired for game {gameId}, checking ship placement");
+                Console.WriteLine($"[Server] Player reconnected to already-started game {assigned.Id}, skipping placement phase");
+                // Game already started, don't trigger placement phase or timeout
+            }
+            else
+            {
+                // both players connected -> start placement phase with 60s timer
+                assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(ShipPlacementTimeSeconds);
+                // notify both clients
+                var playerA = assigned.PlayerA;
+                var playerB = assigned.PlayerB;
+                if (playerA != null)
+                    await Clients.Client(playerA).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
+                if (playerB != null)
+                    await Clients.Client(playerB).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
 
-                    // timeout expired - set cancellation flag (will be handled in hub methods)
-                    lock (_lock)
+                // start a background task to enforce placement timeout
+                var gameId = assigned.Id; // capture game id before async task
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        var game = _gameManager.GetGame(gameId);
-                        if (game != null && !game.Started)
+                        await Task.Delay(TimeSpan.FromSeconds(ShipPlacementTimeSeconds));
+                        Console.WriteLine($"[Server] Timeout expired for game {gameId}, checking ship placement");
+
+                        // timeout expired - set cancellation flag (will be handled in hub methods)
+                        lock (_lock)
                         {
-                            Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
-                            game.Started = true; // mark timeout expired
-                            _ = StartGameIfReady(game); // fire and forget - will cancel if ships weren't placed
+                            var game = _gameManager.GetGame(gameId);
+                            if (game != null && !game.Started)
+                            {
+                                Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
+                                game.Started = true; // mark timeout expired
+                                _ = StartGameIfReady(game); // fire and forget - will cancel if ships weren't placed
+                            }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Server] Error in placement timeout task for game {gameId}: {ex.Message}");
-                }
-            });
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Server] Error in placement timeout task for game {gameId}: {ex.Message}");
+                    }
+                });
+            }
         }
 
         await base.OnConnectedAsync();
@@ -165,10 +184,13 @@ public class GameHub : Hub
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var connId = Context.ConnectionId;
-        
+
+        // Save game state before disconnecting (MEMENTO PATTERN)
+        _gameManager.SaveGameOnDisconnect(connId);
+
         // Use GameManager to handle player removal
         var (game, gameId) = _gameManager.RemovePlayer(connId);
-        
+
         if (game != null && gameId != null)
         {
             // Notify opponent
@@ -189,7 +211,7 @@ public class GameHub : Hub
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] PlaceShips called by {connId} with {shipCells?.Count ?? 0} positions");
 
-        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        if (!_gameManager.ValidatePlayerInGameWithProxy(connId, out var g, out var proxy, out var gid))
         {
             await Clients.Caller.SendAsync("Error", "Game not found");
             return;
@@ -208,7 +230,11 @@ public class GameHub : Hub
             return;
         }
 
-        g.SetPlayerShips(connId, shipCells ?? new List<Point>());
+        // Use LoggingProxy if available for enhanced logging
+        if (proxy is LoggingProxy loggingProxy)
+            loggingProxy.SetPlayerShips(connId, shipCells ?? new List<Point>());
+        else
+            g.SetPlayerShips(connId, shipCells ?? new List<Point>());
 
         if (connId == g.PlayerA) g.ShipsReadyA = true;
         else if (connId == g.PlayerB) g.ShipsReadyB = true;
@@ -242,7 +268,7 @@ public class GameHub : Hub
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] 🔥 PlaceMines called by {connId} with {minePositions?.Count ?? 0} mines");
 
-        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        if (!_gameManager.ValidatePlayerInGameWithProxy(connId, out var g, out var proxy, out var gid))
         {
             Console.WriteLine($"[Server] ❌ Game not found for connection {connId}");
             await Clients.Caller.SendAsync("Error", "Game not found");
@@ -260,7 +286,7 @@ public class GameHub : Hub
                 if (Enum.TryParse<MineCategory>(mineCategories[i], out var category))
                 {
                     // Check if mine position overlaps with ships
-                    var playerShips = connId == g.PlayerA ? g.ShipsA : g.ShipsB;
+                    var playerShips = connId == g!.PlayerA ? g.ShipsA : g.ShipsB;
                     var hasShip = playerShips.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(minePositions[i]));
 
                     if (hasShip)
@@ -276,7 +302,11 @@ public class GameHub : Hub
             }
         }
 
-        g.SetPlayerMines(connId, mines);
+        // Use LoggingProxy if available for enhanced logging
+        if (proxy is LoggingProxy loggingProxy)
+            loggingProxy.SetPlayerMines(connId, mines);
+        else
+            g!.SetPlayerMines(connId, mines);
 
         if (connId == g.PlayerA)
         {
@@ -388,11 +418,14 @@ public class GameHub : Hub
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] MakeMove called by {connId} => ({col},{row})");
 
-        if (!TryGetGame(connId, out var g, out var gid))
+        if (!_gameManager.ValidatePlayerInGameWithProxy(connId, out var g, out var proxy, out var gid))
         {
             await SendError(connId, "Game not found");
             return;
         }
+
+        Console.WriteLine($"[Server] MakeMove: found game {gid} currentTurn={g.CurrentTurn}, proxy={(proxy != null ? "YES" : "NO")}");
+        Console.WriteLine($"[Server] Game instance hashcode: {g.GetHashCode()}, PlayerA={g.PlayerA}, PlayerB={g.PlayerB}");
 
         if (g!.EventInProgress)
         {
@@ -407,13 +440,16 @@ public class GameHub : Hub
 
         lock (_lock)
         {
-            result = HandleMoveUnderLock(g!, gid!, connId, col, row, out triggeredMines);
+            result = HandleMoveUnderLock(g!, proxy, gid!, connId, col, row, out triggeredMines);
 
             if (result.Hit)
             {
-                // Award AP for the hit
+                // Award AP for the hit - use LoggingProxy if available
                 var shooterConnId = connId;
-                g.AddActionPoints(shooterConnId, 1);
+                if (proxy is LoggingProxy loggingProxy)
+                    loggingProxy.AddActionPoints(shooterConnId, 1);
+                else
+                    g.AddActionPoints(shooterConnId, 1);
                 Console.WriteLine($"[Server] Awarded 1 AP to {shooterConnId} for hit. Total AP: {g.GetActionPoints(shooterConnId)}");
             }
         }
@@ -434,13 +470,16 @@ public class GameHub : Hub
         await Clients.Client(connId).SendAsync("Error", message);
     }
 
-    private MoveResult HandleMoveUnderLock(GameInstance g, string gid, string connId, int col, int row, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
+    private MoveResult HandleMoveUnderLock(GameInstance g, GameInstanceProxy? proxy, string gid, string connId, int col, int row, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
     {
         var result = new MoveResult();
         triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
 
         // Increment turn count on every move - THIS IS CORRECT
-        g.IncrementTurnCount();
+        if (proxy is LoggingProxy lp1)
+            lp1.IncrementTurnCount();
+        else
+            g.IncrementTurnCount();
 
         if (!g.Started)
         {
@@ -448,8 +487,12 @@ public class GameHub : Hub
             return result;
         }
 
+        Console.WriteLine($"[Server] Move validation - CurrentTurn: '{g.CurrentTurn}', Firing player connId: '{connId}', Match: {g.CurrentTurn == connId}");
+        Console.WriteLine($"[Server] PlayerA: '{g.PlayerA}', PlayerB: '{g.PlayerB}'");
+
         if (g.CurrentTurn != connId)
         {
+            Console.WriteLine($"[Server] REJECTING move - CurrentTurn '{g.CurrentTurn}' != connId '{connId}'");
             result.ErrorMessage = "Not your turn";
             return result;
         }
@@ -458,14 +501,23 @@ public class GameHub : Hub
         if (g.HasMiniNuke(connId))
         {
             Console.WriteLine($"[Server] MiniNuke activated by {connId} at ({col},{row})");
-            result = HandleMiniNukeShot(g, connId, col, row, out triggeredMines);
-            g.SetMiniNuke(connId, false);
+            result = HandleMiniNukeShot(g, proxy, connId, col, row, out triggeredMines);
+            if (proxy is LoggingProxy lp2)
+                lp2.SetMiniNuke(connId, false);
+            else
+                g.SetMiniNuke(connId, false);
         }
         else
         {
             Console.WriteLine($"[Server] Registering normal shot for game={gid}");
             var target = new Point(col, row);
-            bool hit = g.RegisterShotWithMines(g.Other(connId)!, target, out bool opponentLost, out triggeredMines);
+            bool hit;
+            bool opponentLost;
+
+            if (proxy is LoggingProxy lp3)
+                hit = lp3.RegisterShotWithMines(g.Other(connId)!, target, out opponentLost, out triggeredMines);
+            else
+                hit = g.RegisterShotWithMines(g.Other(connId)!, target, out opponentLost, out triggeredMines);
 
             result.Col = col;
             result.Row = row;
@@ -481,10 +533,15 @@ public class GameHub : Hub
             else
             {
                 if (!hit)
-                    g.SwitchTurn();
+                {
+                    if (proxy is LoggingProxy lp4)
+                        lp4.SwitchTurn();
+                    else
+                        g.SwitchTurn();
+                }
 
                 // FIX: Only decrement disaster countdown ONCE per move
-                result.Disaster = CheckForDisaster(g, gid);
+                result.Disaster = CheckForDisaster(g, proxy, gid);
             }
         }
 
@@ -492,14 +549,14 @@ public class GameHub : Hub
         return result;
     }
 
-    private MoveResult HandleMiniNukeShot(GameInstance g, string connId, int centerCol, int centerRow, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
+    private MoveResult HandleMiniNukeShot(GameInstance g, GameInstanceProxy? proxy, string connId, int centerCol, int centerRow, out List<(Guid, MineCategory, List<Point>)> triggeredMines)
     {
         var result = new MoveResult();
         triggeredMines = new List<(Guid, MineCategory, List<Point>)>();
 
         var opponentConnId = g.Other(connId);
         var totalHits = 0;
-        var allHitCells = new List<Point>(); 
+        var allHitCells = new List<Point>();
 
         // Shoot in 3x3 area around the center
         for (int dx = -1; dx <= 1; dx++)
@@ -512,7 +569,15 @@ public class GameHub : Hub
                 if (target.X < 0 || target.X >= Board.Size || target.Y < 0 || target.Y >= Board.Size)
                     continue;
 
-                bool hit = g.RegisterShotWithMines(opponentConnId!, target, out bool opponentLost, out var mineTriggers);
+                bool hit;
+                bool opponentLost;
+                List<(Guid, MineCategory, List<Point>)> mineTriggers;
+
+                if (proxy is LoggingProxy lp5)
+                    hit = lp5.RegisterShotWithMines(opponentConnId!, target, out opponentLost, out mineTriggers);
+                else
+                    hit = g.RegisterShotWithMines(opponentConnId!, target, out opponentLost, out mineTriggers);
+
                 triggeredMines.AddRange(mineTriggers);
 
                 if (hit)
@@ -542,7 +607,7 @@ public class GameHub : Hub
 
         if (result.GameOverCaller == null)
         {
-            result.Disaster = CheckForDisaster(g, g.Id);
+            result.Disaster = CheckForDisaster(g, proxy, g.Id);
         }
 
         return result;
@@ -553,16 +618,22 @@ public class GameHub : Hub
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] SelectRepairTarget called by {connId}: ({col},{row})");
 
-        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        if (!_gameManager.ValidatePlayerInGameWithProxy(connId, out var g, out var proxy, out var gid))
         {
             await SendError(connId, "Game not found");
             return;
         }
 
         var target = new Point(col, row);
-        g.SetRepairTarget(connId, target);
+        g!.SetRepairTarget(connId, target);
 
-        if (g.ApplyRepair(connId))
+        bool success;
+        if (proxy is LoggingProxy loggingProxy)
+            success = loggingProxy.ApplyRepair(connId);
+        else
+            success = g.ApplyRepair(connId);
+
+        if (success)
         {
             Console.WriteLine($"[Server] Repair applied by {connId} at ({col},{row})");
             await Clients.Caller.SendAsync("RepairApplied", col, row);
@@ -583,13 +654,13 @@ public class GameHub : Hub
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] ActivatePowerUp called by {connId}: {powerUpName}");
 
-        if (!_gameManager.ValidatePlayerInGame(connId, out var g, out var gid))
+        if (!_gameManager.ValidatePlayerInGameWithProxy(connId, out var g, out var proxy, out var gid))
         {
             await SendError(connId, "Game not found");
             return;
         }
 
-        await ProcessPowerUpActivation(g, connId, powerUpName);
+        await ProcessPowerUpActivation(g!, proxy, connId, powerUpName);
 
         // Notify both players about power-up activation
         if (g.PlayerA != null)
@@ -727,7 +798,7 @@ public class GameHub : Hub
     }
 
 
-    private DisasterResult? CheckForDisaster(GameInstance g, string gid)
+    private DisasterResult? CheckForDisaster(GameInstance g, GameInstanceProxy? proxy, string gid)
     {
         // Check for forced disaster first
         if (g.ForceDisaster)
@@ -744,7 +815,7 @@ public class GameHub : Hub
             }
 
             Console.WriteLine($"[Server] Forced disaster affecting {affected.Count} cells");
-            return CreateDisasterResult(g, affected, "Forced Disaster");
+            return CreateDisasterResult(g, proxy, affected, "Forced Disaster");
         }
 
         // Check normal disaster countdown
@@ -768,10 +839,10 @@ public class GameHub : Hub
         }
 
         Console.WriteLine($"[Server] Natural disaster affecting {affectedNormal.Count} cells");
-        return CreateDisasterResult(g, affectedNormal, g.GameMode.EventGenerator?.GetEventName());
+        return CreateDisasterResult(g, proxy, affectedNormal, g.GameMode.EventGenerator?.GetEventName());
     }
 
-    private DisasterResult CreateDisasterResult(GameInstance g, List<Point> affected, string? typeName)
+    private DisasterResult CreateDisasterResult(GameInstance g, GameInstanceProxy? proxy, List<Point> affected, string? typeName)
     {
         var hitsForA = new List<Point>();
         var hitsForB = new List<Point>();
@@ -782,6 +853,23 @@ public class GameHub : Hub
                 hitsForA.Add(p);
             if (g.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(p)))
                 hitsForB.Add(p);
+        }
+
+        // Apply disaster damage with mines using LoggingProxy if available
+        if (hitsForA.Count > 0)
+        {
+            if (proxy is LoggingProxy lp6)
+                lp6.ApplyDisasterWithMines(g.PlayerA!, hitsForA, out _);
+            else
+                g.ApplyDisasterWithMines(g.PlayerA!, hitsForA, out _);
+        }
+
+        if (hitsForB.Count > 0)
+        {
+            if (proxy is LoggingProxy lp7)
+                lp7.ApplyDisasterWithMines(g.PlayerB!, hitsForB, out _);
+            else
+                g.ApplyDisasterWithMines(g.PlayerB!, hitsForB, out _);
         }
 
         g.EventInProgress = true;
@@ -1087,8 +1175,122 @@ public class GameHub : Hub
         await Clients.All.SendAsync("ReceiveHello", msg);
     }
 
+    // ========================================
+    // PLAYER NAME AND RECONNECTION SUPPORT
+    // ========================================
 
-    private async Task ProcessPowerUpActivation(GameInstance g, string connId, string powerUpName)
+    /// <summary>
+    /// Set the player's name (for reconnection support)
+    /// </summary>
+    public async Task SetPlayerName(string playerName)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] Setting player name for {connId}: {playerName}");
+
+        _gameManager.SetPlayerName(connId, playerName);
+        await Clients.Caller.SendAsync("PlayerNameSet", playerName);
+    }
+
+    /// <summary>
+    /// Attempt to reconnect to a previous game using player name
+    /// </summary>
+    public async Task ReconnectToGame(string playerName)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] Reconnection attempt by {playerName} with connection {connId}");
+
+        var (game, gameId, isPlayerA) = _gameManager.ReconnectPlayer(playerName, connId);
+
+        if (game == null || gameId == null)
+        {
+            await Clients.Caller.SendAsync("ReconnectFailed", "No saved game found for this player name.");
+            Console.WriteLine($"[Server] Reconnection failed for {playerName}");
+            return;
+        }
+
+        // Send full game state to the reconnected player
+        Console.WriteLine($"[Server] Sending full game state to reconnected player {playerName}");
+
+        // Build complete game state data
+        var gameStateData = new
+        {
+            GameId = gameId,
+            IsPlayerA = isPlayerA,
+
+            // Your ships and hits
+            YourShips = isPlayerA ? game.ShipsA.Select(s => new
+            {
+                s.Id,
+                s.Length,
+                s.Position,
+                s.Orientation,
+                s.IsPlaced,
+                Cells = s.GetOccupiedCells()
+            }).ToList() : game.ShipsB.Select(s => new
+            {
+                s.Id,
+                s.Length,
+                s.Position,
+                s.Orientation,
+                s.IsPlaced,
+                Cells = s.GetOccupiedCells()
+            }).ToList(),
+
+            // Filter hit cells to only include cells that actually hit ships (not disaster misses on water)
+            YourHitCells = isPlayerA
+                ? game.HitCellsA.Where(cell => game.ShipsA.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList()
+                : game.HitCellsB.Where(cell => game.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList(),
+            OpponentHitCells = isPlayerA
+                ? game.HitCellsB.Where(cell => game.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList()
+                : game.HitCellsA.Where(cell => game.ShipsA.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList(),
+
+            // Your mines
+            YourMines = isPlayerA ? game.MinesA.Select(m => new
+            {
+                m.Id,
+                m.Position,
+                m.Category,
+                m.IsExploded
+            }).ToList() : game.MinesB.Select(m => new
+            {
+                m.Id,
+                m.Position,
+                m.Category,
+                m.IsExploded
+            }).ToList(),
+
+            // Game state
+            game.Started,
+            CurrentTurn = game.CurrentTurn,
+            IsYourTurn = game.CurrentTurn == connId,
+
+            // Action points
+            YourActionPoints = isPlayerA ? game.ActionPointsA : game.ActionPointsB,
+
+            // Power-ups
+            HasMiniNuke = isPlayerA ? game.HasMiniNukeA : game.HasMiniNukeB,
+
+            // Turn count
+            TurnCount = game.GetTurnCount(),
+
+            // Disaster countdown
+            DisasterCountdown = game.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1
+        };
+
+        await Clients.Caller.SendAsync("GameStateRestored", gameStateData);
+
+        // Notify the other player if they're connected
+        var otherPlayer = isPlayerA ? game.PlayerB : game.PlayerA;
+        if (otherPlayer != null)
+        {
+            await Clients.Client(otherPlayer).SendAsync("OpponentReconnected", $"{playerName} has reconnected!");
+        }
+
+        Console.WriteLine($"[Server] Successfully reconnected {playerName} to game {gameId}");
+    }
+
+
+    private async Task ProcessPowerUpActivation(GameInstance g, GameInstanceProxy? proxy, string connId, string powerUpName)
     {
         var powerUp = PowerUpFactory.CreatePowerUp(powerUpName);
         var playerAP = g.GetActionPoints(connId);
@@ -1099,14 +1301,18 @@ public class GameHub : Hub
             return;
         }
 
-        g.DeductActionPoints(connId, powerUp.Cost);
+        // Use LoggingProxy if available for enhanced logging
+        if (proxy is LoggingProxy lp8)
+            lp8.DeductActionPoints(connId, powerUp.Cost);
+        else
+            g.DeductActionPoints(connId, powerUp.Cost);
 
         switch (powerUpName.ToLower())
         {
             case "initiatedisaster":
                 g.ForceDisaster = true;
                 Console.WriteLine($"[Server] 🔥 Forced disaster activated by {connId}");
-                var disaster = CheckForDisaster(g, g.Id);
+                var disaster = CheckForDisaster(g, proxy, g.Id);
                 if (disaster != null)
                 {
                     Console.WriteLine($"[Server] 🔥 Immediately triggering forced disaster");
@@ -1115,7 +1321,10 @@ public class GameHub : Hub
                 break;
 
             case "mininuke":
-                g.SetMiniNuke(connId, true);
+                if (proxy is LoggingProxy lp9)
+                    lp9.SetMiniNuke(connId, true);
+                else
+                    g.SetMiniNuke(connId, true);
                 Console.WriteLine($"[Server] MiniNuke activated by {connId}");
                 break;
 

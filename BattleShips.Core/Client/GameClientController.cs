@@ -66,6 +66,9 @@ namespace BattleShips.Core.Client
 
         public bool IsConnected => _client.IsConnected;
 
+        // Expose the client for console interpreter
+        public GameClient Client => _client;
+
         public Task ConnectAsync(string baseUrl) => _client.ConnectAsync(baseUrl);
         public Task PlaceShips(List<Point> ships) => _client.PlaceShips(ships);
         public Task MakeMove(int col, int row) => _client.MakeMove(col, row);

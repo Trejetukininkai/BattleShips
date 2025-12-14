@@ -21,3 +21,4 @@
 **/old/
 
 .env
+BattleShips.Server/gameLogs

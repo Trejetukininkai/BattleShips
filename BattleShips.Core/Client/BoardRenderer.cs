@@ -119,15 +119,18 @@ namespace BattleShips.Core
             // Draw titles
             DrawBoardTitles(g, left, right, font);
 
+            // Draw ships (always visible, even during mine selection)
+            DrawShips(g, model, left);
+
+            // Draw mines (always visible, especially during mine selection)
+            DrawMines(g, model, left);
+
             // --- Mine selection overlay ---
             if (model.State == AppState.MineSelection)
             {
                 DrawMineChooser(g, font, model);
                 return; // skip other game elements until selection done
             }
-
-            // Draw ships
-            DrawShips(g, model, left);
 
             // Draw dragged ship preview
             DrawDraggedShipPreview(g, model, left);
@@ -140,9 +143,6 @@ namespace BattleShips.Core
 
             // Animated disaster effects
             DrawAnimatedDisasters(g, model, left);
-
-            // Draw mines
-            DrawMines(g, model, left);
 
             // Undo button
             DrawUndoButton(g, font);

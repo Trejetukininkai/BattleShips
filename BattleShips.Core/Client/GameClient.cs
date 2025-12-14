@@ -42,6 +42,12 @@ namespace BattleShips.Core
         public event Action<int>? ActionPointsUpdated;
         public event Action<string>? PowerUpActivated;
 
+        // Reconnection events
+        public event Action<string>? PlayerNameSet;
+        public event Action<object>? GameStateRestored;
+        public event Action<string>? ReconnectFailed;
+        public event Action<string>? OpponentReconnected;
+
 
         public async Task ConnectAsync(string url)
         {
@@ -128,6 +134,31 @@ namespace BattleShips.Core
                 Console.WriteLine($"[GameClient] PowerUpActivated: {powerUp}");
                 PowerUpActivated?.Invoke(powerUp);
             });
+
+            // Reconnection events
+            _conn.On<string>("PlayerNameSet", (name) =>
+            {
+                Console.WriteLine($"[GameClient] PlayerNameSet: {name}");
+                PlayerNameSet?.Invoke(name);
+            });
+
+            _conn.On<object>("GameStateRestored", (gameState) =>
+            {
+                Console.WriteLine($"[GameClient] GameStateRestored");
+                GameStateRestored?.Invoke(gameState);
+            });
+
+            _conn.On<string>("ReconnectFailed", (message) =>
+            {
+                Console.WriteLine($"[GameClient] ReconnectFailed: {message}");
+                ReconnectFailed?.Invoke(message);
+            });
+
+            _conn.On<string>("OpponentReconnected", (message) =>
+            {
+                Console.WriteLine($"[GameClient] OpponentReconnected: {message}");
+                OpponentReconnected?.Invoke(message);
+            });
         }
 
         public Task PlaceShips(List<Point> ships)
@@ -182,6 +213,24 @@ namespace BattleShips.Core
             Console.WriteLine($"[GameClient] Sending ActivatePowerUp: {powerUpName}");
             if (_conn == null) throw new InvalidOperationException("Not connected");
             return _conn.SendAsync("ActivatePowerUp", powerUpName);
+        }
+
+        // ========================================
+        // RECONNECTION METHODS
+        // ========================================
+
+        public Task SetPlayerName(string playerName)
+        {
+            Console.WriteLine($"[GameClient] Setting player name: {playerName}");
+            if (_conn == null) throw new InvalidOperationException("Not connected");
+            return _conn.SendAsync("SetPlayerName", playerName);
+        }
+
+        public Task ReconnectToGame(string playerName)
+        {
+            Console.WriteLine($"[GameClient] Attempting to reconnect as: {playerName}");
+            if (_conn == null) throw new InvalidOperationException("Not connected");
+            return _conn.SendAsync("ReconnectToGame", playerName);
         }
     }
 }
