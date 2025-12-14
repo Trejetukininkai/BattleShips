@@ -3,13 +3,14 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using BattleShips.Core.Server.Memento;
 
 namespace BattleShips.Core.Server
 {
     /// <summary>
     /// Singleton class that manages all game instances and player connections.
     /// Provides thread-safe operations for game state management.
-    /// Now supports proxy pattern for games.
+    /// Now supports proxy pattern for games and memento pattern for reconnection.
     /// </summary>
     public sealed class GameManager
     {
@@ -26,6 +27,7 @@ namespace BattleShips.Core.Server
         private readonly ConcurrentDictionary<string, VirtualProxy> _virtualProxies = new(); // Track virtual proxies
         private readonly ConcurrentDictionary<string, GameInstanceProxy> _activeProxies = new(); // Active proxies (Security/Logging)
         private readonly ConcurrentDictionary<string, string> _playerGame = new(); // connectionId -> gameId
+        private readonly ConcurrentDictionary<string, string> _playerNames = new(); // connectionId -> playerName
         private readonly ConcurrentDictionary<string, string> _proxyTypes = new(); // gameId -> proxy type for logging
         private readonly object _lock = new();
         private readonly Random _random = new();
@@ -43,14 +45,14 @@ namespace BattleShips.Core.Server
         /// </summary>
         public GameInstance? GetGame(string gameId)
         {
-            // Try to get the active proxy first (LoggingProxy or SecurityProxy)
-            if (_activeProxies.TryGetValue(gameId, out var proxy))
+            // _games dictionary contains only GameInstance objects (never proxies)
+            // Proxies are stored separately in _activeProxies
+            var game = _games.TryGetValue(gameId, out var g) ? g : null;
+            if (game != null)
             {
-                return proxy.GetWrappedInstance(); // Return the wrapped instance through the proxy
+                Console.WriteLine($"[GameManager] GetGame({gameId}) returned instance with hashcode: {game.GetHashCode()}, PlayerA='{game.PlayerA}', PlayerB='{game.PlayerB}'");
             }
-
-            // Fall back to raw game instance
-            return _games.TryGetValue(gameId, out var game) ? game : null;
+            return game;
         }
 
         /// <summary>
@@ -138,9 +140,9 @@ namespace BattleShips.Core.Server
                         virtualProxy.PlayerB = connectionId;
 
                         // 50/50 chance to wrap with SecurityProxy or LoggingProxy
-                        bool useSecurity = _random.Next(2) == 0;
+                        // bool useSecurity = _random.Next(2) == 0;
                         // bool useSecurity = false;
-                        // bool useSecurity = true;
+                        bool useSecurity = true;
 
                         if (useSecurity)
                         {
@@ -330,6 +332,208 @@ namespace BattleShips.Core.Server
         public GameInstanceProxy? GetActiveProxy(string gameId)
         {
             return _activeProxies.TryGetValue(gameId, out var proxy) ? proxy : null;
+        }
+
+        #endregion
+
+        #region Player Name and Reconnection Support
+
+        /// <summary>
+        /// Set player name for a connection
+        /// </summary>
+        public void SetPlayerName(string connectionId, string playerName)
+        {
+            _playerNames[connectionId] = playerName;
+
+            // Update the game instance with the player name
+            var gameId = GetPlayerGameId(connectionId);
+            if (gameId != null && _games.TryGetValue(gameId, out var game))
+            {
+                if (game.PlayerA == connectionId)
+                {
+                    game.PlayerAName = playerName;
+                    Console.WriteLine($"[GameManager] Set PlayerA name to {playerName} in game {gameId}");
+                }
+                else if (game.PlayerB == connectionId)
+                {
+                    game.PlayerBName = playerName;
+                    Console.WriteLine($"[GameManager] Set PlayerB name to {playerName} in game {gameId}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get player name for a connection
+        /// </summary>
+        public string? GetPlayerName(string connectionId)
+        {
+            return _playerNames.TryGetValue(connectionId, out var name) ? name : null;
+        }
+
+        /// <summary>
+        /// Attempt to reconnect a player by name
+        /// Returns the game instance if found, null otherwise
+        /// </summary>
+        public (GameInstance? game, string? gameId, bool isPlayerA) ReconnectPlayer(string playerName, string newConnectionId)
+        {
+            Console.WriteLine($"[GameManager] Attempting to reconnect player {playerName} with connection {newConnectionId}");
+
+            // Check if there's a saved game for this player
+            var memento = GameCaretaker.Instance.GetGameByPlayerName(playerName);
+            if (memento == null)
+            {
+                Console.WriteLine($"[GameManager] No saved game found for player {playerName}");
+                return (null, null, false);
+            }
+
+            lock (_lock)
+            {
+                // IMPORTANT: Remove player from any wrongly-assigned game first
+                // This happens because OnConnectedAsync runs before ReconnectToGame
+                var wrongGameId = GetPlayerGameId(newConnectionId);
+                if (wrongGameId != null && wrongGameId != memento.GameId)
+                {
+                    Console.WriteLine($"[GameManager] Player {newConnectionId} was wrongly assigned to game {wrongGameId}, removing them");
+                    var wrongGame = GetGame(wrongGameId);
+                    if (wrongGame != null)
+                    {
+                        if (wrongGame.PlayerA == newConnectionId)
+                            wrongGame.PlayerA = null;
+                        else if (wrongGame.PlayerB == newConnectionId)
+                            wrongGame.PlayerB = null;
+
+                        // If this was the only player in the wrong game, remove it
+                        if (string.IsNullOrEmpty(wrongGame.PlayerA) && string.IsNullOrEmpty(wrongGame.PlayerB))
+                        {
+                            _games.Remove(wrongGameId, out _);
+                            _activeProxies.Remove(wrongGameId, out _);
+                            Console.WriteLine($"[GameManager] Removed empty game {wrongGameId}");
+                        }
+                    }
+                }
+
+                // Check if the game already exists in active games
+                if (_games.TryGetValue(memento.GameId, out var existingGame))
+                {
+                    // Game still active - reconnect to it
+                    bool isPlayerA = memento.PlayerAName == playerName;
+
+                    Console.WriteLine($"[GameManager] Reconnecting {playerName} to existing game - CurrentTurn BEFORE update: '{existingGame.CurrentTurn}'");
+                    Console.WriteLine($"[GameManager] IsPlayerATurn from memento: {memento.IsPlayerATurn}, Reconnecting player is PlayerA: {isPlayerA}");
+
+                    if (isPlayerA)
+                    {
+                        existingGame.PlayerA = newConnectionId;
+                        existingGame.PlayerAName = playerName;
+                        // Update CurrentTurn if it was PlayerA's turn (using memento flag)
+                        if (memento.IsPlayerATurn)
+                        {
+                            existingGame.CurrentTurn = newConnectionId;
+                            Console.WriteLine($"[GameManager] Updated CurrentTurn to PlayerA's new connection: {newConnectionId}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[GameManager] NOT updating CurrentTurn - it's PlayerB's turn");
+                        }
+                    }
+                    else
+                    {
+                        existingGame.PlayerB = newConnectionId;
+                        existingGame.PlayerBName = playerName;
+                        // Update CurrentTurn if it was PlayerB's turn (using memento flag)
+                        if (!memento.IsPlayerATurn)
+                        {
+                            existingGame.CurrentTurn = newConnectionId;
+                            Console.WriteLine($"[GameManager] Updated CurrentTurn to PlayerB's new connection: {newConnectionId}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[GameManager] NOT updating CurrentTurn - it's PlayerA's turn");
+                        }
+                    }
+
+                    Console.WriteLine($"[GameManager] CurrentTurn AFTER update: '{existingGame.CurrentTurn}'");
+                    Console.WriteLine($"[GameManager] PlayerA: '{existingGame.PlayerA}', PlayerB: '{existingGame.PlayerB}'");
+                    Console.WriteLine($"[GameManager] Updated game instance hashcode: {existingGame.GetHashCode()}");
+
+                    _playerGame[newConnectionId] = memento.GameId;
+                    _playerNames[newConnectionId] = playerName;
+
+                    Console.WriteLine($"[GameManager] Reconnected {playerName} to existing game {memento.GameId} as {(isPlayerA ? "PlayerA" : "PlayerB")}");
+                    return (existingGame, memento.GameId, isPlayerA);
+                }
+                else
+                {
+                    // Restore game from memento
+                    var restoredGame = new GameInstance(memento.GameId);
+                    restoredGame.RestoreFromMemento(memento);
+
+                    Console.WriteLine($"[GameManager] Restoring game from memento - CurrentTurn from memento: '{memento.CurrentTurn}'");
+                    Console.WriteLine($"[GameManager] IsPlayerATurn from memento: {memento.IsPlayerATurn}");
+
+                    // Set the new connection ID
+                    bool isPlayerA = memento.PlayerAName == playerName;
+
+                    if (isPlayerA)
+                    {
+                        restoredGame.PlayerA = newConnectionId;
+                        // Update CurrentTurn if it was PlayerA's turn (using the boolean flag)
+                        if (memento.IsPlayerATurn)
+                        {
+                            restoredGame.CurrentTurn = newConnectionId;
+                            Console.WriteLine($"[GameManager] Updated CurrentTurn to PlayerA's new connection: {newConnectionId}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[GameManager] NOT updating CurrentTurn - it's PlayerB's turn (will be set when PlayerB reconnects)");
+                        }
+                    }
+                    else
+                    {
+                        restoredGame.PlayerB = newConnectionId;
+                        // Update CurrentTurn if it was PlayerB's turn (using the boolean flag)
+                        if (!memento.IsPlayerATurn)
+                        {
+                            restoredGame.CurrentTurn = newConnectionId;
+                            Console.WriteLine($"[GameManager] Updated CurrentTurn to PlayerB's new connection: {newConnectionId}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[GameManager] NOT updating CurrentTurn - it's PlayerA's turn (will be set when PlayerA reconnects)");
+                        }
+                    }
+
+                    Console.WriteLine($"[GameManager] CurrentTurn AFTER restoration: '{restoredGame.CurrentTurn}'");
+                    Console.WriteLine($"[GameManager] PlayerA: '{restoredGame.PlayerA}', PlayerB: '{restoredGame.PlayerB}'");
+
+                    _games[memento.GameId] = restoredGame;
+                    _playerGame[newConnectionId] = memento.GameId;
+                    _playerNames[newConnectionId] = playerName;
+
+                    Console.WriteLine($"[GameManager] Restored game {memento.GameId} from memento for player {playerName}");
+                    return (restoredGame, memento.GameId, isPlayerA);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Save game state when a player disconnects
+        /// </summary>
+        public void SaveGameOnDisconnect(string connectionId)
+        {
+            var gameId = GetPlayerGameId(connectionId);
+            if (gameId == null) return;
+
+            if (_games.TryGetValue(gameId, out var game))
+            {
+                // Only save if the game has actually started
+                if (game.Started && (game.ShipsReadyA || game.ShipsReadyB))
+                {
+                    var memento = game.CreateMemento();
+                    GameCaretaker.Instance.SaveGame(memento);
+                    Console.WriteLine($"[GameManager] Saved game {gameId} on disconnect of {connectionId}");
+                }
+            }
         }
 
         #endregion

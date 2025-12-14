@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using BattleShips.Core.Server.Memento;
 
 namespace BattleShips.Core
 {
@@ -12,6 +13,10 @@ namespace BattleShips.Core
         public string Id { get; }
         public virtual string? PlayerA { get; set; }
         public virtual string? PlayerB { get; set; }
+
+        // Player names for reconnection
+        public string? PlayerAName { get; set; }
+        public string? PlayerBName { get; set; }
 
         // Logging support
         private LoggingProxy? _loggingProxy;
@@ -459,6 +464,118 @@ namespace BattleShips.Core
                 MinesB = mines;
                 MinesReadyB = true;
             }
+        }
+
+        // ========================================
+        // MEMENTO PATTERN: Save and Restore State
+        // ========================================
+
+        /// <summary>
+        /// Creates a memento containing the complete game state
+        /// </summary>
+        public GameMemento CreateMemento()
+        {
+            var memento = new GameMemento(Id)
+            {
+                PlayerAName = PlayerAName,
+                PlayerBName = PlayerBName,
+
+                // Convert ships to serializable format
+                ShipsAData = ShipsA.Select(ShipData.FromShip).ToList(),
+                ShipsBData = ShipsB.Select(ShipData.FromShip).ToList(),
+
+                // Hit cells
+                HitCellsA = HitCellsA.ToList(),
+                HitCellsB = HitCellsB.ToList(),
+
+                // Mines
+                MinesAData = MinesA.Select(MineData.FromMine).ToList(),
+                MinesBData = MinesB.Select(MineData.FromMine).ToList(),
+
+                // Game state
+                ReadyA = ReadyA,
+                ReadyB = ReadyB,
+                Started = Started,
+                ShipsReadyA = ShipsReadyA,
+                ShipsReadyB = ShipsReadyB,
+                MinesReadyA = MinesReadyA,
+                MinesReadyB = MinesReadyB,
+
+                // Turn info
+                CurrentTurn = CurrentTurn,
+                IsPlayerATurn = CurrentTurn == PlayerA, // Track whose turn by player, not connection
+                TurnCount = TurnCount,
+
+                // Power-ups
+                ActionPointsA = ActionPointsA,
+                ActionPointsB = ActionPointsB,
+                HasMiniNukeA = HasMiniNukeA,
+                HasMiniNukeB = HasMiniNukeB,
+
+                // Game mode
+                GameModeData = GameModeData.FromGameMode(GameMode, TurnCount)
+            };
+
+            Console.WriteLine($"[GameInstance] Created memento for game {Id} with players {PlayerAName}, {PlayerBName}");
+            return memento;
+        }
+
+        /// <summary>
+        /// Restores game state from a memento
+        /// </summary>
+        public void RestoreFromMemento(GameMemento memento)
+        {
+            if (memento == null)
+            {
+                Console.WriteLine($"[GameInstance] Cannot restore from null memento");
+                return;
+            }
+
+            Console.WriteLine($"[GameInstance] Restoring game {Id} from memento saved at {memento.SavedAt}");
+
+            // Restore player names
+            PlayerAName = memento.PlayerAName;
+            PlayerBName = memento.PlayerBName;
+
+            // Restore ships
+            ShipsA = memento.ShipsAData.Select(sd => sd.ToShip()).ToList();
+            ShipsB = memento.ShipsBData.Select(sd => sd.ToShip()).ToList();
+
+            // Restore hit cells
+            HitCellsA = new HashSet<Point>(memento.HitCellsA);
+            HitCellsB = new HashSet<Point>(memento.HitCellsB);
+
+            // Restore mines
+            MinesA = memento.MinesAData.Select(md => md.ToMine()).ToList();
+            MinesB = memento.MinesBData.Select(md => md.ToMine()).ToList();
+
+            // Restore game state
+            ReadyA = memento.ReadyA;
+            ReadyB = memento.ReadyB;
+            Started = memento.Started;
+            ShipsReadyA = memento.ShipsReadyA;
+            ShipsReadyB = memento.ShipsReadyB;
+            MinesReadyA = memento.MinesReadyA;
+            MinesReadyB = memento.MinesReadyB;
+
+            // Restore turn info
+            CurrentTurn = memento.CurrentTurn;
+            TurnCount = memento.TurnCount;
+
+            // Restore power-ups
+            ActionPointsA = memento.ActionPointsA;
+            ActionPointsB = memento.ActionPointsB;
+            HasMiniNukeA = memento.HasMiniNukeA;
+            HasMiniNukeB = memento.HasMiniNukeB;
+
+            // Restore game mode
+            if (memento.GameModeData != null)
+            {
+                GameMode = memento.GameModeData.ToGameMode();
+            }
+
+            Console.WriteLine($"[GameInstance] Restored game state: Ships A={ShipsA.Count}, Ships B={ShipsB.Count}, " +
+                            $"Hits A={HitCellsA.Count}, Hits B={HitCellsB.Count}, Turn={CurrentTurn}");
         }
     }
 }

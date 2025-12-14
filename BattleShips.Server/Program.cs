@@ -73,7 +73,17 @@ public class GameHub : Hub
     {
         var connId = Context.ConnectionId;
         Console.WriteLine($"[Server] OnConnectedAsync: conn={connId}");
-        
+
+        // Check if this player is already assigned to a game (reconnection in progress)
+        // If so, skip the assignment logic as it will be handled by ReconnectToGame
+        var existingGameId = _gameManager.GetPlayerGameId(connId);
+        if (existingGameId != null)
+        {
+            Console.WriteLine($"[Server] Player {connId} already assigned to game {existingGameId}, skipping OnConnectedAsync assignment");
+            await base.OnConnectedAsync();
+            return;
+        }
+
         // Use GameManager to assign player to game
         var assigned = _gameManager.AssignPlayerToGame(connId);
 
@@ -86,42 +96,51 @@ public class GameHub : Hub
         }
         else if (assigned.PlayerCount == 2)
         {
-            // both players connected -> start placement phase with 60s timer
-            assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(ShipPlacementTimeSeconds);
-            // notify both clients
-            var playerA = assigned.PlayerA;
-            var playerB = assigned.PlayerB;
-            if (playerA != null)
-                await Clients.Client(playerA).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
-            if (playerB != null)
-                await Clients.Client(playerB).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
-
-            // start a background task to enforce placement timeout
-            var gameId = assigned.Id; // capture game id before async task
-            _ = Task.Run(async () =>
+            // Check if this is a reconnection to an already-started game
+            if (assigned.Started)
             {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(ShipPlacementTimeSeconds));
-                    Console.WriteLine($"[Server] Timeout expired for game {gameId}, checking ship placement");
+                Console.WriteLine($"[Server] Player reconnected to already-started game {assigned.Id}, skipping placement phase");
+                // Game already started, don't trigger placement phase or timeout
+            }
+            else
+            {
+                // both players connected -> start placement phase with 60s timer
+                assigned.PlacementDeadline = DateTime.UtcNow.AddSeconds(ShipPlacementTimeSeconds);
+                // notify both clients
+                var playerA = assigned.PlayerA;
+                var playerB = assigned.PlayerB;
+                if (playerA != null)
+                    await Clients.Client(playerA).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
+                if (playerB != null)
+                    await Clients.Client(playerB).SendAsync("StartPlacement", ShipPlacementTimeSeconds);
 
-                    // timeout expired - set cancellation flag (will be handled in hub methods)
-                    lock (_lock)
+                // start a background task to enforce placement timeout
+                var gameId = assigned.Id; // capture game id before async task
+                _ = Task.Run(async () =>
+                {
+                    try
                     {
-                        var game = _gameManager.GetGame(gameId);
-                        if (game != null && !game.Started)
+                        await Task.Delay(TimeSpan.FromSeconds(ShipPlacementTimeSeconds));
+                        Console.WriteLine($"[Server] Timeout expired for game {gameId}, checking ship placement");
+
+                        // timeout expired - set cancellation flag (will be handled in hub methods)
+                        lock (_lock)
                         {
-                            Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
-                            game.Started = true; // mark timeout expired
-                            _ = StartGameIfReady(game); // fire and forget - will cancel if ships weren't placed
+                            var game = _gameManager.GetGame(gameId);
+                            if (game != null && !game.Started)
+                            {
+                                Console.WriteLine($"[Server] Setting cancellation flag for game {gameId} due to timeout");
+                                game.Started = true; // mark timeout expired
+                                _ = StartGameIfReady(game); // fire and forget - will cancel if ships weren't placed
+                            }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Server] Error in placement timeout task for game {gameId}: {ex.Message}");
-                }
-            });
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Server] Error in placement timeout task for game {gameId}: {ex.Message}");
+                    }
+                });
+            }
         }
 
         await base.OnConnectedAsync();
@@ -165,10 +184,13 @@ public class GameHub : Hub
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var connId = Context.ConnectionId;
-        
+
+        // Save game state before disconnecting (MEMENTO PATTERN)
+        _gameManager.SaveGameOnDisconnect(connId);
+
         // Use GameManager to handle player removal
         var (game, gameId) = _gameManager.RemovePlayer(connId);
-        
+
         if (game != null && gameId != null)
         {
             // Notify opponent
@@ -402,6 +424,9 @@ public class GameHub : Hub
             return;
         }
 
+        Console.WriteLine($"[Server] MakeMove: found game {gid} currentTurn={g.CurrentTurn}, proxy={(proxy != null ? "YES" : "NO")}");
+        Console.WriteLine($"[Server] Game instance hashcode: {g.GetHashCode()}, PlayerA={g.PlayerA}, PlayerB={g.PlayerB}");
+
         if (g!.EventInProgress)
         {
             await SendError(connId, "Event in progress");
@@ -462,8 +487,12 @@ public class GameHub : Hub
             return result;
         }
 
+        Console.WriteLine($"[Server] Move validation - CurrentTurn: '{g.CurrentTurn}', Firing player connId: '{connId}', Match: {g.CurrentTurn == connId}");
+        Console.WriteLine($"[Server] PlayerA: '{g.PlayerA}', PlayerB: '{g.PlayerB}'");
+
         if (g.CurrentTurn != connId)
         {
+            Console.WriteLine($"[Server] REJECTING move - CurrentTurn '{g.CurrentTurn}' != connId '{connId}'");
             result.ErrorMessage = "Not your turn";
             return result;
         }
@@ -1144,6 +1173,120 @@ public class GameHub : Hub
     {
         Console.WriteLine($"Received from {msg.From}: {msg.Text}");
         await Clients.All.SendAsync("ReceiveHello", msg);
+    }
+
+    // ========================================
+    // PLAYER NAME AND RECONNECTION SUPPORT
+    // ========================================
+
+    /// <summary>
+    /// Set the player's name (for reconnection support)
+    /// </summary>
+    public async Task SetPlayerName(string playerName)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] Setting player name for {connId}: {playerName}");
+
+        _gameManager.SetPlayerName(connId, playerName);
+        await Clients.Caller.SendAsync("PlayerNameSet", playerName);
+    }
+
+    /// <summary>
+    /// Attempt to reconnect to a previous game using player name
+    /// </summary>
+    public async Task ReconnectToGame(string playerName)
+    {
+        var connId = Context.ConnectionId;
+        Console.WriteLine($"[Server] Reconnection attempt by {playerName} with connection {connId}");
+
+        var (game, gameId, isPlayerA) = _gameManager.ReconnectPlayer(playerName, connId);
+
+        if (game == null || gameId == null)
+        {
+            await Clients.Caller.SendAsync("ReconnectFailed", "No saved game found for this player name.");
+            Console.WriteLine($"[Server] Reconnection failed for {playerName}");
+            return;
+        }
+
+        // Send full game state to the reconnected player
+        Console.WriteLine($"[Server] Sending full game state to reconnected player {playerName}");
+
+        // Build complete game state data
+        var gameStateData = new
+        {
+            GameId = gameId,
+            IsPlayerA = isPlayerA,
+
+            // Your ships and hits
+            YourShips = isPlayerA ? game.ShipsA.Select(s => new
+            {
+                s.Id,
+                s.Length,
+                s.Position,
+                s.Orientation,
+                s.IsPlaced,
+                Cells = s.GetOccupiedCells()
+            }).ToList() : game.ShipsB.Select(s => new
+            {
+                s.Id,
+                s.Length,
+                s.Position,
+                s.Orientation,
+                s.IsPlaced,
+                Cells = s.GetOccupiedCells()
+            }).ToList(),
+
+            // Filter hit cells to only include cells that actually hit ships (not disaster misses on water)
+            YourHitCells = isPlayerA
+                ? game.HitCellsA.Where(cell => game.ShipsA.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList()
+                : game.HitCellsB.Where(cell => game.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList(),
+            OpponentHitCells = isPlayerA
+                ? game.HitCellsB.Where(cell => game.ShipsB.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList()
+                : game.HitCellsA.Where(cell => game.ShipsA.Any(ship => ship.IsPlaced && ship.GetOccupiedCells().Contains(cell))).ToList(),
+
+            // Your mines
+            YourMines = isPlayerA ? game.MinesA.Select(m => new
+            {
+                m.Id,
+                m.Position,
+                m.Category,
+                m.IsExploded
+            }).ToList() : game.MinesB.Select(m => new
+            {
+                m.Id,
+                m.Position,
+                m.Category,
+                m.IsExploded
+            }).ToList(),
+
+            // Game state
+            game.Started,
+            CurrentTurn = game.CurrentTurn,
+            IsYourTurn = game.CurrentTurn == connId,
+
+            // Action points
+            YourActionPoints = isPlayerA ? game.ActionPointsA : game.ActionPointsB,
+
+            // Power-ups
+            HasMiniNuke = isPlayerA ? game.HasMiniNukeA : game.HasMiniNukeB,
+
+            // Turn count
+            TurnCount = game.GetTurnCount(),
+
+            // Disaster countdown
+            DisasterCountdown = game.GameMode?.EventGenerator?.GetDisasterCountdown() ?? -1
+        };
+
+        await Clients.Caller.SendAsync("GameStateRestored", gameStateData);
+
+        // Notify the other player if they're connected
+        var otherPlayer = isPlayerA ? game.PlayerB : game.PlayerA;
+        if (otherPlayer != null)
+        {
+            await Clients.Client(otherPlayer).SendAsync("OpponentReconnected", $"{playerName} has reconnected!");
+        }
+
+        Console.WriteLine($"[Server] Successfully reconnected {playerName} to game {gameId}");
     }
 
 

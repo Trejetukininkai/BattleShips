@@ -22,6 +22,9 @@ namespace BattleShips.Client
 
         private Panel? _startupPanel;
         private Button? _btnConnectLocal;
+        private Button? _btnReconnect;
+        private TextBox? _txtPlayerName;
+        private TextBox? _txtServerUrl;
         private Label? _lblStatus;
         private Label? _lblCountdown;
         private System.Windows.Forms.Timer? _uiTimer;
@@ -177,11 +180,63 @@ namespace BattleShips.Client
             var subtitleSize = subtitleLabel.PreferredSize;
             subtitleLabel.Location = new Point(centerX - subtitleSize.Width / 2, startY + 50);
 
+            // Input fields setup
+            var inputWidth = 280;
+            var inputHeight = 35;
+            var inputSpacing = 15;
+            var inputsStartY = startY + 100;
+
+            // Player Name Label
+            var lblPlayerName = new Label
+            {
+                Text = "Player Name:",
+                ForeColor = Color.FromArgb(200, 200, 200),
+                Font = new Font("Segoe UI", 10),
+                AutoSize = true,
+                BackColor = Color.Transparent
+            };
+            lblPlayerName.Location = new Point(centerX - inputWidth / 2, inputsStartY);
+
+            // Player Name TextBox
+            _txtPlayerName = new TextBox
+            {
+                Size = new Size(inputWidth, inputHeight),
+                Location = new Point(centerX - inputWidth / 2, inputsStartY + 25),
+                Font = new Font("Segoe UI", 11),
+                BackColor = Color.FromArgb(45, 50, 60),
+                ForeColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                Text = "Player1" // Default name
+            };
+
+            // Server URL Label
+            var lblServerUrl = new Label
+            {
+                Text = "Server URL:",
+                ForeColor = Color.FromArgb(200, 200, 200),
+                Font = new Font("Segoe UI", 10),
+                AutoSize = true,
+                BackColor = Color.Transparent
+            };
+            lblServerUrl.Location = new Point(centerX - inputWidth / 2, inputsStartY + 70);
+
+            // Server URL TextBox
+            _txtServerUrl = new TextBox
+            {
+                Size = new Size(inputWidth, inputHeight),
+                Location = new Point(centerX - inputWidth / 2, inputsStartY + 95),
+                Font = new Font("Segoe UI", 11),
+                BackColor = Color.FromArgb(45, 50, 60),
+                ForeColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                Text = "http://localhost:5000" // Default URL
+            };
+
             // Buttons setup
             var buttonWidth = 280;
             var buttonHeight = 50;
-            var buttonSpacing = 20;
-            var buttonsStartY = startY + 120;
+            var buttonSpacing = 15;
+            var buttonsStartY = inputsStartY + 145;
 
             // Connect to Server button
             _btnConnectLocal = new Button
@@ -198,6 +253,21 @@ namespace BattleShips.Client
             _btnConnectLocal.FlatAppearance.BorderSize = 0;
             _btnConnectLocal.FlatAppearance.MouseOverBackColor = Color.FromArgb(39, 174, 96);
 
+            // Reconnect button
+            _btnReconnect = new Button
+            {
+                Text = "🔄 Reconnect to Game",
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(52, 152, 219), // Modern blue
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(buttonWidth, buttonHeight),
+                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + buttonHeight + buttonSpacing),
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+            _btnReconnect.FlatAppearance.BorderSize = 0;
+            _btnReconnect.FlatAppearance.MouseOverBackColor = Color.FromArgb(41, 128, 185);
+
             // Settings button
             var btnSettings = new Button
             {
@@ -206,7 +276,7 @@ namespace BattleShips.Client
                 BackColor = Color.FromArgb(52, 73, 94), // Modern gray
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(buttonWidth, buttonHeight),
-                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + buttonHeight + buttonSpacing),
+                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + 2 * (buttonHeight + buttonSpacing)),
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Cursor = Cursors.Hand
             };
@@ -221,7 +291,7 @@ namespace BattleShips.Client
                 BackColor = Color.FromArgb(231, 76, 60), // Modern red
                 FlatStyle = FlatStyle.Flat,
                 Size = new Size(buttonWidth, buttonHeight),
-                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + 2 * (buttonHeight + buttonSpacing)),
+                Location = new Point(centerX - buttonWidth / 2, buttonsStartY + 3 * (buttonHeight + buttonSpacing)),
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Cursor = Cursors.Hand
             };
@@ -239,7 +309,7 @@ namespace BattleShips.Client
                 BackColor = Color.Transparent
             };
             var statusSize = _lblStatus.PreferredSize;
-            _lblStatus.Location = new Point(centerX - statusSize.Width / 2, buttonsStartY + 3 * (buttonHeight + buttonSpacing) + 20);
+            _lblStatus.Location = new Point(centerX - statusSize.Width / 2, buttonsStartY + 4 * (buttonHeight + buttonSpacing) + 20);
 
             _lblCountdown = new Label
             {
@@ -250,26 +320,71 @@ namespace BattleShips.Client
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 BackColor = Color.Transparent
             };
-            _lblCountdown.Location = new Point(centerX - 50, buttonsStartY + 3 * (buttonHeight + buttonSpacing) + 45);
+            _lblCountdown.Location = new Point(centerX - 50, buttonsStartY + 4 * (buttonHeight + buttonSpacing) + 45);
 
             // Event handlers
             _btnConnectLocal.Click += async (_, __) =>
             {
                 _btnConnectLocal.Enabled = false;
+                _btnReconnect!.Enabled = false;
                 _model.CurrentStatus = "🔄 Connecting to server...";
+
+                var playerName = _txtPlayerName?.Text ?? "Player1";
+                var serverUrl = _txtServerUrl?.Text ?? "http://localhost:5000";
+
                 try
                 {
-                    await _controller.ConnectAsync("http://localhost:5000");
+                    await _controller.ConnectAsync(serverUrl);
+
+                    // Set player name after connecting
+                    await _controller.Client.SetPlayerName(playerName);
+
                     ResetBoards();
                     _model.State = AppState.Waiting;
                     _startupPanel!.Visible = false;
-                    Text = "Connected to BattleShips server";
+                    Text = $"Connected to BattleShips server as {playerName}";
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Failed to connect: {ex.Message}", "Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     _model.CurrentStatus = "❌ Connection failed - Try again";
                     _btnConnectLocal.Enabled = true;
+                    _btnReconnect!.Enabled = true;
+                }
+            };
+
+            _btnReconnect.Click += async (_, __) =>
+            {
+                _btnConnectLocal!.Enabled = false;
+                _btnReconnect.Enabled = false;
+                _model.CurrentStatus = "🔄 Reconnecting to saved game...";
+
+                var playerName = _txtPlayerName?.Text ?? "Player1";
+                var serverUrl = _txtServerUrl?.Text ?? "http://localhost:5000";
+
+                if (string.IsNullOrWhiteSpace(playerName))
+                {
+                    MessageBox.Show("Please enter your player name to reconnect.", "Name Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _btnConnectLocal!.Enabled = true;
+                    _btnReconnect.Enabled = true;
+                    return;
+                }
+
+                try
+                {
+                    await _controller.ConnectAsync(serverUrl);
+
+                    // Attempt to reconnect to saved game
+                    await _controller.Client.ReconnectToGame(playerName);
+
+                    // The reconnection response will be handled by the GameStateRestored event
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to reconnect: {ex.Message}", "Reconnection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    _model.CurrentStatus = "❌ Reconnection failed - Try again";
+                    _btnConnectLocal!.Enabled = true;
+                    _btnReconnect.Enabled = true;
                 }
             };
 
@@ -292,7 +407,12 @@ namespace BattleShips.Client
             // Add all controls to the panel
             _startupPanel.Controls.Add(titleLabel);
             _startupPanel.Controls.Add(subtitleLabel);
+            _startupPanel.Controls.Add(lblPlayerName);
+            _startupPanel.Controls.Add(_txtPlayerName);
+            _startupPanel.Controls.Add(lblServerUrl);
+            _startupPanel.Controls.Add(_txtServerUrl);
             _startupPanel.Controls.Add(_btnConnectLocal);
+            _startupPanel.Controls.Add(_btnReconnect);
             _startupPanel.Controls.Add(btnSettings);
             _startupPanel.Controls.Add(btnQuit);
             _startupPanel.Controls.Add(_lblStatus);
