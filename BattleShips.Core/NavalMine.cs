@@ -166,20 +166,44 @@ namespace BattleShips.Core
 
     public abstract class NavalMine
     {
+        // FLYWEIGHT PATTERN: Extrinsic (unique) data - different for each mine instance
         public Guid Id { get; } = Guid.NewGuid();
         public Point Position { get; }
         public string OwnerConnId { get; }
-        public ISpecialEffect Effect { get; }
-        public MineCategory Category { get; }
         public bool IsExploded { get; private set; } = false;
         public DateTime PlacedAt { get; } = DateTime.UtcNow;
 
+        // FLYWEIGHT PATTERN: Reference to shared flyweight containing intrinsic data
+        private readonly MineEffectFlyweight _flyweight;
+
+        /// <summary>
+        /// FLYWEIGHT PATTERN: Access to shared effect (from flyweight)
+        /// </summary>
+        public ISpecialEffect Effect => _flyweight.Effect;
+
+        /// <summary>
+        /// FLYWEIGHT PATTERN: Access to shared category (from flyweight)
+        /// </summary>
+        public MineCategory Category => _flyweight.Category;
+
+        protected NavalMine(Point pos, string ownerConnId, MineEffectFlyweight flyweight)
+        {
+            Position = pos;
+            OwnerConnId = ownerConnId;
+            _flyweight = flyweight ?? throw new ArgumentNullException(nameof(flyweight));
+        }
+
+        /// <summary>
+        /// Legacy constructor for backward compatibility (creates flyweight internally)
+        /// </summary>
+        [Obsolete("Use constructor with MineEffectFlyweight for better memory efficiency")]
         protected NavalMine(Point pos, string ownerConnId, ISpecialEffect effect, MineCategory category)
         {
             Position = pos;
             OwnerConnId = ownerConnId;
-            Effect = effect;
-            Category = category;
+            // Create a temporary flyweight (not cached) for backward compatibility
+            _flyweight = new MineEffectFlyweight(effect, category, 
+                category == MineCategory.AntiEnemy_Restore || category == MineCategory.AntiEnemy_Ricochet);
         }
 
         // Called to attempt trigger; returns points affected by effect (for networking/UI) or null if not triggered.
@@ -192,15 +216,32 @@ namespace BattleShips.Core
 
             IsExploded = true;
 
-            return Effect.ActivateEffect(instance, OwnerConnId, Position);
+            // FLYWEIGHT PATTERN: Use shared effect from flyweight
+            return _flyweight.Effect.ActivateEffect(instance, OwnerConnId, Position);
         }
 
         protected abstract bool ShouldTrigger(MineTriggerType triggerType, string triggeringConnId);
+
+        /// <summary>
+        /// FLYWEIGHT PATTERN: Gets the trigger type this mine responds to (from flyweight)
+        /// </summary>
+        protected MineTriggerType GetTriggerType() => _flyweight.TriggerType;
     }
 
     // Triggers only when hit by enemy (EnemyShot)
     public class AntiEnemyMine : NavalMine
     {
+        /// <summary>
+        /// FLYWEIGHT PATTERN: Constructor using flyweight
+        /// </summary>
+        public AntiEnemyMine(Point pos, string ownerConnId, MineEffectFlyweight flyweight)
+            : base(pos, ownerConnId, flyweight)
+        { }
+
+        /// <summary>
+        /// Legacy constructor for backward compatibility
+        /// </summary>
+        [Obsolete("Use constructor with MineEffectFlyweight")]
         public AntiEnemyMine(Point pos, string ownerConnId, ISpecialEffect effect, MineCategory category)
             : base(pos, ownerConnId, effect, category)
         { }
@@ -209,10 +250,10 @@ namespace BattleShips.Core
         {
             Console.WriteLine($"[Mine] Checking trigger: type={triggerType}, triggerer={triggeringConnId}, owner={OwnerConnId}");
 
-            // Only trigger on enemy shots (not disasters), and only if trigger came from other player
-            if (triggerType != MineTriggerType.EnemyShot)
+            // FLYWEIGHT PATTERN: Use trigger type from flyweight
+            if (triggerType != GetTriggerType())
             {
-                Console.WriteLine($"[Mine] Wrong trigger type");
+                Console.WriteLine($"[Mine] Wrong trigger type (expected {GetTriggerType()}, got {triggerType})");
                 return false;
             }
             if (triggeringConnId == OwnerConnId)
@@ -229,6 +270,17 @@ namespace BattleShips.Core
     // Triggers only when hit by disaster (Disaster)
     public class AntiDisasterMine : NavalMine
     {
+        /// <summary>
+        /// FLYWEIGHT PATTERN: Constructor using flyweight
+        /// </summary>
+        public AntiDisasterMine(Point pos, string ownerConnId, MineEffectFlyweight flyweight)
+            : base(pos, ownerConnId, flyweight)
+        { }
+
+        /// <summary>
+        /// Legacy constructor for backward compatibility
+        /// </summary>
+        [Obsolete("Use constructor with MineEffectFlyweight")]
         public AntiDisasterMine(Point pos, string ownerConnId, ISpecialEffect effect, MineCategory category)
             : base(pos, ownerConnId, effect, category)
         { }
@@ -237,8 +289,9 @@ namespace BattleShips.Core
         {
             Console.WriteLine($"[AntiDisasterMine] Checking trigger: type={triggerType}, triggerer={triggeringConnId}, owner={OwnerConnId}");
 
-            bool shouldTrigger = triggerType == MineTriggerType.Disaster;
-            Console.WriteLine($"[AntiDisasterMine] Should trigger: {shouldTrigger}");
+            // FLYWEIGHT PATTERN: Use trigger type from flyweight
+            bool shouldTrigger = triggerType == GetTriggerType();
+            Console.WriteLine($"[AntiDisasterMine] Should trigger: {shouldTrigger} (expected {GetTriggerType()})");
 
             return shouldTrigger;
         }
@@ -247,25 +300,32 @@ namespace BattleShips.Core
     // Factory to create mines from category chosen by player
     public static class NavalMineFactory
     {
+        /// <summary>
+        /// FLYWEIGHT PATTERN: Creates a mine using shared flyweight for effects.
+        /// Multiple mines of the same category will share the same effect instance.
+        /// </summary>
         public static NavalMine CreateMine(Point pos, string ownerConnId, MineCategory category)
         {
-            ISpecialEffect effect = category switch
-            {
-                MineCategory.AntiEnemy_Restore => new RestoreShipEffect(2),
-                MineCategory.AntiEnemy_Ricochet => new RicochetToMeteorStrikeAdapter(new RicochetEffect()), 
-                MineCategory.AntiDisaster_Restore => new RestoreShipEffect(2),
-                MineCategory.AntiDisaster_Ricochet => new RicochetToMeteorStrikeAdapter(new RicochetEffect()), 
-                _ => new RicochetToMeteorStrikeAdapter(new RicochetEffect()), 
-            };
+            // FLYWEIGHT PATTERN: Get or create shared flyweight (cached by category)
+            var flyweight = MineFlyweightFactory.GetFlyweight(category);
 
+            // Create mine with shared flyweight
             return category switch
             {
-                MineCategory.AntiEnemy_Restore => new AntiEnemyMine(pos, ownerConnId, effect, category),
-                MineCategory.AntiEnemy_Ricochet => new AntiEnemyMine(pos, ownerConnId, effect, category),
-                MineCategory.AntiDisaster_Restore => new AntiDisasterMine(pos, ownerConnId, effect, category),
-                MineCategory.AntiDisaster_Ricochet => new AntiDisasterMine(pos, ownerConnId, effect, category),
-                _ => new AntiEnemyMine(pos, ownerConnId, effect, category),
+                MineCategory.AntiEnemy_Restore => new AntiEnemyMine(pos, ownerConnId, flyweight),
+                MineCategory.AntiEnemy_Ricochet => new AntiEnemyMine(pos, ownerConnId, flyweight),
+                MineCategory.AntiDisaster_Restore => new AntiDisasterMine(pos, ownerConnId, flyweight),
+                MineCategory.AntiDisaster_Ricochet => new AntiDisasterMine(pos, ownerConnId, flyweight),
+                _ => new AntiEnemyMine(pos, ownerConnId, flyweight),
             };
+        }
+
+        /// <summary>
+        /// Gets statistics about flyweight usage (for debugging/monitoring)
+        /// </summary>
+        public static string GetFlyweightStatistics()
+        {
+            return MineFlyweightFactory.GetCacheStatistics();
         }
     }
 }
