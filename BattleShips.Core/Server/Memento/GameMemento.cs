@@ -8,51 +8,73 @@ namespace BattleShips.Core.Server.Memento
     /// <summary>
     /// Memento pattern implementation for saving game state.
     /// Stores a complete snapshot of a GameInstance's state.
+    /// SECURE: All setters are internal - only GameInstance can modify state.
+    /// External classes can only read through IReadOnlyCollection properties.
     /// </summary>
     public class GameMemento
     {
-        // Game identifiers
-        public string GameId { get; set; }
-        public string? PlayerAName { get; set; }
-        public string? PlayerBName { get; set; }
-        public DateTime SavedAt { get; set; }
+        // Game identifiers - read-only externally
+        public string GameId { get; internal set; }
+        public string? PlayerAName { get; internal set; }
+        public string? PlayerBName { get; internal set; }
+        public DateTime SavedAt { get; internal set; }
 
-        // Ship data - serializable format
-        public List<ShipData> ShipsAData { get; set; } = new();
-        public List<ShipData> ShipsBData { get; set; } = new();
+        // Ship data - private backing fields
+        private List<ShipData> _shipsAData = new();
+        private List<ShipData> _shipsBData = new();
 
-        // Hit cells
-        public List<Point> HitCellsA { get; set; } = new();
-        public List<Point> HitCellsB { get; set; } = new();
+        // Expose as read-only collections
+        public IReadOnlyList<ShipData> ShipsAData => _shipsAData.AsReadOnly();
+        public IReadOnlyList<ShipData> ShipsBData => _shipsBData.AsReadOnly();
 
-        // Mine data
-        public List<MineData> MinesAData { get; set; } = new();
-        public List<MineData> MinesBData { get; set; } = new();
+        // Internal setters for GameInstance
+        internal void SetShipsAData(List<ShipData> data) => _shipsAData = new List<ShipData>(data);
+        internal void SetShipsBData(List<ShipData> data) => _shipsBData = new List<ShipData>(data);
 
-        // Game state
-        public bool ReadyA { get; set; }
-        public bool ReadyB { get; set; }
-        public bool Started { get; set; }
-        public bool ShipsReadyA { get; set; }
-        public bool ShipsReadyB { get; set; }
-        public bool MinesReadyA { get; set; }
-        public bool MinesReadyB { get; set; }
+        // Hit cells - private backing fields
+        private List<Point> _hitCellsA = new();
+        private List<Point> _hitCellsB = new();
 
-        // Turn information
-        public string? CurrentTurn { get; set; }
-        public bool IsPlayerATurn { get; set; } // Track whose turn it is by player, not connection ID
-        public int TurnCount { get; set; }
+        public IReadOnlyList<Point> HitCellsA => _hitCellsA.AsReadOnly();
+        public IReadOnlyList<Point> HitCellsB => _hitCellsB.AsReadOnly();
 
-        // Power-ups and special states
-        public int ActionPointsA { get; set; }
-        public int ActionPointsB { get; set; }
-        public bool HasMiniNukeA { get; set; }
-        public bool HasMiniNukeB { get; set; }
+        internal void SetHitCellsA(List<Point> cells) => _hitCellsA = new List<Point>(cells);
+        internal void SetHitCellsB(List<Point> cells) => _hitCellsB = new List<Point>(cells);
 
-        // Game mode data
-        public GameModeData? GameModeData { get; set; }
+        // Mine data - private backing fields
+        private List<MineData> _minesAData = new();
+        private List<MineData> _minesBData = new();
 
-        public GameMemento(string gameId)
+        public IReadOnlyList<MineData> MinesAData => _minesAData.AsReadOnly();
+        public IReadOnlyList<MineData> MinesBData => _minesBData.AsReadOnly();
+
+        internal void SetMinesAData(List<MineData> data) => _minesAData = new List<MineData>(data);
+        internal void SetMinesBData(List<MineData> data) => _minesBData = new List<MineData>(data);
+
+        // Game state - internal setters
+        public bool ReadyA { get; internal set; }
+        public bool ReadyB { get; internal set; }
+        public bool Started { get; internal set; }
+        public bool ShipsReadyA { get; internal set; }
+        public bool ShipsReadyB { get; internal set; }
+        public bool MinesReadyA { get; internal set; }
+        public bool MinesReadyB { get; internal set; }
+
+        // Turn information - internal setters
+        public string? CurrentTurn { get; internal set; }
+        public bool IsPlayerATurn { get; internal set; } // Track whose turn it is by player, not connection ID
+        public int TurnCount { get; internal set; }
+
+        // Power-ups and special states - internal setters
+        public int ActionPointsA { get; internal set; }
+        public int ActionPointsB { get; internal set; }
+        public bool HasMiniNukeA { get; internal set; }
+        public bool HasMiniNukeB { get; internal set; }
+
+        // Game mode data - internal setter
+        public GameModeData? GameModeData { get; internal set; }
+
+        internal GameMemento(string gameId)
         {
             GameId = gameId;
             SavedAt = DateTime.UtcNow;
@@ -61,18 +83,19 @@ namespace BattleShips.Core.Server.Memento
 
     /// <summary>
     /// Serializable ship data for memento
+    /// SECURE: Internal setters prevent external modification
     /// </summary>
     public class ShipData
     {
-        public int Id { get; set; }
-        public int Length { get; set; }
-        public Point Position { get; set; }
-        public ShipOrientation Orientation { get; set; }
-        public bool IsPlaced { get; set; }
-        public ShipClass Class { get; set; }
-        public string ShipType { get; set; } = ""; // "AircraftCarrier", "BattleShip", etc.
+        public int Id { get; internal set; }
+        public int Length { get; internal set; }
+        public Point Position { get; internal set; }
+        public ShipOrientation Orientation { get; internal set; }
+        public bool IsPlaced { get; internal set; }
+        public ShipClass Class { get; internal set; }
+        public string ShipType { get; internal set; } = ""; // "AircraftCarrier", "BattleShip", etc.
 
-        public static ShipData FromShip(IShip ship)
+        internal static ShipData FromShip(IShip ship)
         {
             return new ShipData
             {
@@ -86,7 +109,7 @@ namespace BattleShips.Core.Server.Memento
             };
         }
 
-        public IShip ToShip()
+        internal IShip ToShip()
         {
             var factory = Class == ShipClass.Curvy ? new CurvyClass() : (IClass)new BlockyClass();
 
@@ -109,16 +132,17 @@ namespace BattleShips.Core.Server.Memento
 
     /// <summary>
     /// Serializable mine data for memento
+    /// SECURE: Internal setters prevent external modification
     /// </summary>
     public class MineData
     {
-        public Guid Id { get; set; }
-        public Point Position { get; set; }
-        public string OwnerConnId { get; set; } = "";
-        public MineCategory Category { get; set; }
-        public bool IsExploded { get; set; }
+        public Guid Id { get; internal set; }
+        public Point Position { get; internal set; }
+        public string OwnerConnId { get; internal set; } = "";
+        public MineCategory Category { get; internal set; }
+        public bool IsExploded { get; internal set; }
 
-        public static MineData FromMine(NavalMine mine)
+        internal static MineData FromMine(NavalMine mine)
         {
             return new MineData
             {
@@ -130,7 +154,7 @@ namespace BattleShips.Core.Server.Memento
             };
         }
 
-        public NavalMine ToMine()
+        internal NavalMine ToMine()
         {
             // Create mine using factory
             var mine = NavalMineFactory.CreateMine(Position, OwnerConnId, Category);
@@ -151,17 +175,18 @@ namespace BattleShips.Core.Server.Memento
 
     /// <summary>
     /// Serializable game mode data for memento
+    /// SECURE: Internal setters prevent external modification
     /// </summary>
     public class GameModeData
     {
-        public int ShipCount { get; set; }
-        public int BoardX { get; set; }
-        public int BoardY { get; set; }
-        public int DisasterCountdown { get; set; }
-        public string? CurrentEventName { get; set; }
-        public int TurnCount { get; set; }
+        public int ShipCount { get; internal set; }
+        public int BoardX { get; internal set; }
+        public int BoardY { get; internal set; }
+        public int DisasterCountdown { get; internal set; }
+        public string? CurrentEventName { get; internal set; }
+        public int TurnCount { get; internal set; }
 
-        public static GameModeData? FromGameMode(GameMode? gameMode, int turnCount)
+        internal static GameModeData? FromGameMode(GameMode? gameMode, int turnCount)
         {
             if (gameMode == null) return null;
 
@@ -176,7 +201,7 @@ namespace BattleShips.Core.Server.Memento
             };
         }
 
-        public GameMode ToGameMode()
+        internal GameMode ToGameMode()
         {
             var gameMode = new GameMode(ShipCount, BoardX, BoardY);
 

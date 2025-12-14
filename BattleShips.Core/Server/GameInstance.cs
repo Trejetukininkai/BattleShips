@@ -480,18 +480,6 @@ namespace BattleShips.Core
                 PlayerAName = PlayerAName,
                 PlayerBName = PlayerBName,
 
-                // Convert ships to serializable format
-                ShipsAData = ShipsA.Select(ShipData.FromShip).ToList(),
-                ShipsBData = ShipsB.Select(ShipData.FromShip).ToList(),
-
-                // Hit cells
-                HitCellsA = HitCellsA.ToList(),
-                HitCellsB = HitCellsB.ToList(),
-
-                // Mines
-                MinesAData = MinesA.Select(MineData.FromMine).ToList(),
-                MinesBData = MinesB.Select(MineData.FromMine).ToList(),
-
                 // Game state
                 ReadyA = ReadyA,
                 ReadyB = ReadyB,
@@ -515,6 +503,14 @@ namespace BattleShips.Core
                 // Game mode
                 GameModeData = GameModeData.FromGameMode(GameMode, TurnCount)
             };
+
+            // Set collections using internal methods (defensive copies)
+            memento.SetShipsAData(ShipsA.Select(ShipData.FromShip).ToList());
+            memento.SetShipsBData(ShipsB.Select(ShipData.FromShip).ToList());
+            memento.SetHitCellsA(HitCellsA.ToList());
+            memento.SetHitCellsB(HitCellsB.ToList());
+            memento.SetMinesAData(MinesA.Select(MineData.FromMine).ToList());
+            memento.SetMinesBData(MinesB.Select(MineData.FromMine).ToList());
 
             Console.WriteLine($"[GameInstance] Created memento for game {Id} with players {PlayerAName}, {PlayerBName}");
             return memento;
