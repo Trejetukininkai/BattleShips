@@ -64,13 +64,14 @@ namespace BattleShips.Core.Server.Memento
 
         /// <summary>
         /// Retrieve a game memento by game ID
+        /// SECURE: Returns a defensive copy to prevent external modification
         /// </summary>
         public GameMemento? GetGame(string gameId)
         {
             if (_savedGames.TryGetValue(gameId, out var memento))
             {
-                Console.WriteLine($"[GameCaretaker] Retrieved game {gameId}");
-                return memento;
+                Console.WriteLine($"[GameCaretaker] Retrieved game {gameId} (returning defensive copy)");
+                return CreateDefensiveCopy(memento);
             }
 
             // Try loading from disk
@@ -78,8 +79,8 @@ namespace BattleShips.Core.Server.Memento
             if (loadedMemento != null)
             {
                 _savedGames[gameId] = loadedMemento;
-                Console.WriteLine($"[GameCaretaker] Loaded game {gameId} from disk");
-                return loadedMemento;
+                Console.WriteLine($"[GameCaretaker] Loaded game {gameId} from disk (returning defensive copy)");
+                return CreateDefensiveCopy(loadedMemento);
             }
 
             Console.WriteLine($"[GameCaretaker] Game {gameId} not found");
@@ -88,6 +89,7 @@ namespace BattleShips.Core.Server.Memento
 
         /// <summary>
         /// Find a saved game by player name
+        /// SECURE: Returns a defensive copy to prevent external modification
         /// </summary>
         public GameMemento? GetGameByPlayerName(string playerName)
         {
@@ -96,7 +98,7 @@ namespace BattleShips.Core.Server.Memento
 
             if (_playerNameToGameId.TryGetValue(playerName, out var gameId))
             {
-                return GetGame(gameId);
+                return GetGame(gameId); // Already returns defensive copy
             }
 
             // Search through all saved games
@@ -105,7 +107,7 @@ namespace BattleShips.Core.Server.Memento
                 if (memento.PlayerAName == playerName || memento.PlayerBName == playerName)
                 {
                     _playerNameToGameId[playerName] = memento.GameId;
-                    return memento;
+                    return CreateDefensiveCopy(memento);
                 }
             }
 
@@ -121,7 +123,7 @@ namespace BattleShips.Core.Server.Memento
                     {
                         _savedGames[memento.GameId] = memento;
                         _playerNameToGameId[playerName] = memento.GameId;
-                        return memento;
+                        return CreateDefensiveCopy(memento);
                     }
                 }
                 catch (Exception ex)
@@ -216,6 +218,33 @@ namespace BattleShips.Core.Server.Memento
                 Console.WriteLine($"[GameCaretaker] Failed to load game {gameId} from disk: {ex.Message}");
             }
             return null;
+        }
+
+        /// <summary>
+        /// Creates a defensive deep copy of a memento using JSON serialization
+        /// This prevents external code from modifying the stored memento
+        /// </summary>
+        private GameMemento CreateDefensiveCopy(GameMemento original)
+        {
+            try
+            {
+                // Use JSON serialization for deep cloning
+                var json = JsonSerializer.Serialize(original);
+                var copy = JsonSerializer.Deserialize<GameMemento>(json);
+
+                if (copy == null)
+                {
+                    Console.WriteLine($"[GameCaretaker] WARNING: Failed to create defensive copy, returning original");
+                    return original;
+                }
+
+                return copy;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GameCaretaker] ERROR creating defensive copy: {ex.Message}");
+                return original;
+            }
         }
 
         /// <summary>
