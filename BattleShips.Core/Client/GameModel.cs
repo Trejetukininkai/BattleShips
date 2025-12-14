@@ -20,9 +20,10 @@ namespace BattleShips.Core
 
         public MineCategory? SelectedMineCategory { get; set; }
 
+        // STATE PATTERN: State context manages state transitions
+        private readonly GameStateContext _stateContext;
+
         public bool IsMinePlacementPhase => State == AppState.MineSelection;
-
-
 
         // for command design patterns - undoing
         private readonly Stack<ICommand> _placementHistory = new();
@@ -30,6 +31,13 @@ namespace BattleShips.Core
         // UI state properties with change notifications
         private string _currentStatus = "Ready to start your naval adventure";
         private AppState _state = AppState.Menu;
+
+        public GameModel()
+        {
+            // STATE PATTERN: Initialize state context
+            _stateContext = new GameStateContext(this);
+            _state = _stateContext.CurrentStateType;
+        }
         private bool _isMyTurn;
         private int _placementSecondsLeft;
         private int _disasterCountdown = -1;
@@ -64,18 +72,28 @@ namespace BattleShips.Core
             }
         }
 
+        /// <summary>
+        /// STATE PATTERN: State property that uses state context for transitions.
+        /// Maintains backward compatibility with AppState enum.
+        /// </summary>
         public AppState State
         {
-            get => _state;
+            get => _stateContext.CurrentStateType;
             set
             {
                 if (_state != value)
                 {
-                    _state = value;
+                    _stateContext.TransitionTo(value);
+                    _state = _stateContext.CurrentStateType;
                     OnModelPropertyChanged(nameof(State));
                 }
             }
         }
+
+        /// <summary>
+        /// STATE PATTERN: Gets the current state instance (for advanced usage)
+        /// </summary>
+        public IGameState? CurrentState => _stateContext.CurrentState;
 
         public bool IsMyTurn
         {
@@ -229,6 +247,10 @@ namespace BattleShips.Core
 
         public bool CanPlaceShip(IShip ship, Point position)
         {
+            // STATE PATTERN: Delegate to current state
+            if (!_stateContext.CanPlaceShip())
+                return false;
+
             ship.Position = position;
 
             // Check if ship is within board bounds
@@ -250,6 +272,15 @@ namespace BattleShips.Core
         }
 
         public void PlaceShip(IShip ship, Point position)
+        {
+            // STATE PATTERN: Delegate to current state
+            _stateContext.HandleShipPlacement(ship, position);
+        }
+
+        /// <summary>
+        /// Internal method for actual ship placement (called by state)
+        /// </summary>
+        internal void PlaceShipInternal(IShip ship, Point position)
         {
             var command = new PlaceShipCommand(this, ship, position);
             command.Execute();
@@ -320,6 +351,15 @@ namespace BattleShips.Core
 
         public void PlaceMine(Point cell)
         {
+            // STATE PATTERN: Delegate to current state
+            _stateContext.HandleMinePlacement(cell);
+        }
+
+        /// <summary>
+        /// Internal method for actual mine placement (called by state)
+        /// </summary>
+        internal void PlaceMineInternal(Point cell)
+        {
             if (SelectedMineCategory == null) return;
 
             // Check if cell already has a mine
@@ -342,16 +382,41 @@ namespace BattleShips.Core
 
         public void StartMinePlacement()
         {
+            // STATE PATTERN: Transition handled by state context
             State = AppState.MineSelection;
-            CurrentStatus = "Place your mine(s) on your board";
+            // Status message set by MineSelectionState.OnEnter()
         }
 
         // When game starts from server
         public void OnGameStarted(bool youStart)
         {
-            State = AppState.Playing; 
-            CurrentStatus = youStart ? "Your turn - click opponent's board to fire!" : "Opponent's turn";
+            // STATE PATTERN: Transition handled by state context
+            State = AppState.Playing;
             _isMyTurn = youStart;
+            // Status message set by PlayingState.OnEnter()
+        }
+
+        /// <summary>
+        /// STATE PATTERN: Checks if an action is allowed in current state
+        /// </summary>
+        public bool CanPerformAction(string action)
+        {
+            return action.ToLower() switch
+            {
+                "placeship" => _stateContext.CanPlaceShip(),
+                "placemine" => _stateContext.CanPlaceMine(),
+                "fire" => _stateContext.CanFire(),
+                "powerup" => _stateContext.CanActivatePowerUp(),
+                _ => false
+            };
+        }
+
+        /// <summary>
+        /// STATE PATTERN: Updates state-specific logic
+        /// </summary>
+        public void UpdateState()
+        {
+            _stateContext.Update();
         }
 
     }
