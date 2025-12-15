@@ -12,8 +12,54 @@ namespace BattleShips.SecurityDemo
     {
         public static void Main(string[] args)
         {
-            Console.WriteLine("GAMEINSTANCE vs SECURITYPROXY COMPARISON");
+            Console.WriteLine("╔════════════════════════════════════════════════════════════╗");
+            Console.WriteLine("║       BATTLESHIPS PROXY DEMONSTRATION SUITE                ║");
+            Console.WriteLine("╚════════════════════════════════════════════════════════════╝\n");
+            Console.WriteLine("Select demonstration to run:");
+            Console.WriteLine("  1. Security Proxy Demo (exploit prevention)");
+            Console.WriteLine("  2. Virtual Proxy Benchmark (performance & memory)");
+            Console.WriteLine("  3. Security & Logging Proxy Benchmark (overhead analysis)");
+            Console.WriteLine("  4. Run all benchmarks (2 + 3)");
+            Console.WriteLine("  5. Run everything\n");
+            Console.Write("Enter choice (1-5): ");
 
+            string? choice = Console.ReadLine();
+
+            Console.WriteLine("\n");
+
+            switch (choice)
+            {
+                case "1":
+                    RunSecurityDemo();
+                    break;
+                case "2":
+                    BattleShips.ProxyBenchmark.VirtualProxyBenchmark.Run();
+                    break;
+                case "3":
+                    BattleShips.ProxyBenchmark.SecurityLoggingProxyBenchmark.Run();
+                    break;
+                case "4":
+                    BattleShips.ProxyBenchmark.VirtualProxyBenchmark.Run();
+                    Console.WriteLine("\n\n");
+                    BattleShips.ProxyBenchmark.SecurityLoggingProxyBenchmark.Run();
+                    break;
+                case "5":
+                    RunSecurityDemo();
+                    Console.WriteLine("\n\n");
+                    BattleShips.ProxyBenchmark.VirtualProxyBenchmark.Run();
+                    Console.WriteLine("\n\n");
+                    BattleShips.ProxyBenchmark.SecurityLoggingProxyBenchmark.Run();
+                    break;
+                default:
+                    Console.WriteLine("Invalid choice. Running Security Demo by default...\n");
+                    RunSecurityDemo();
+                    break;
+            }
+        }
+
+        static void RunSecurityDemo()
+        {
+            Console.WriteLine("GAMEINSTANCE vs SECURITYPROXY COMPARISON");
             RunDirectGameInstanceExploits();
             Console.WriteLine("\n");
             RunSecurityProxyProtection();
