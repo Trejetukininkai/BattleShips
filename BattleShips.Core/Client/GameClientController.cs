@@ -13,6 +13,8 @@ namespace BattleShips.Core.Client
         private readonly GameClient _client;
         private readonly GameModel _model;
 
+        private readonly IGameMediator _mediator;
+
         // Chain of Responsibility Pattern components
         private BattleManager _battleManager;
         private List<IShip> _playerShips;
@@ -54,10 +56,11 @@ namespace BattleShips.Core.Client
             GameCancelled?.Invoke(message);
         }
 
-        public GameClientController(GameClient client, GameModel model)
+        public GameClientController(GameClient client, GameModel model, IGameMediator mediator = null)
         {
             _client = client;
             _model = model;
+            _mediator = mediator;
 
             // Initialize Chain of Responsibility components
             _battleManager = new BattleManager();
@@ -220,6 +223,41 @@ namespace BattleShips.Core.Client
                     var damageResult = ProcessPlayerAttack(c, r);
                     Console.WriteLine($"[Chain] Enemy ship hit at ({c},{r}): {damageResult.Message}");
                 }
+            };
+
+            _client.GameStarted += youStart =>
+            {
+                Console.WriteLine($"[Client] GameStarted received, youStart={youStart}");
+                _model.OnGameStarted(youStart);
+
+                // Notify via mediator
+                _mediator?.SendNotification("GameClient", "GameStarted", youStart);
+
+                GameStarted?.Invoke(youStart);
+            };
+
+            // Add mediator notifications for other events
+            _client.MoveResult += (c, r, h, rem) =>
+            {
+                MoveResult?.Invoke(c, r, h, rem);
+
+                // Notify via mediator
+                if (h)
+                {
+                    _mediator?.SendNotification("GameClient", "ShipHit", new { X = c, Y = r });
+                }
+                else
+                {
+                    _mediator?.SendNotification("GameClient", "ShipMissed", new { X = c, Y = r });
+                }
+            };
+
+            _client.GameOver += msg =>
+            {
+                GameOver?.Invoke(msg);
+
+                // Notify via mediator
+                _mediator?.SendNotification("GameClient", "GameOver", msg);
             };
 
             // Handle opponent's move

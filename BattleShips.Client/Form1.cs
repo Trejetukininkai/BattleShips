@@ -104,6 +104,16 @@ namespace BattleShips.Client
             _model.PropertyChanged += OnModelPropertyChanged;
 
             _controller.MeteorStrike += OnMeteorStrike;
+
+            this.Load += (sender, e) =>
+            {
+                // Run mediator demo after 2 seconds
+                Task.Delay(2000).ContinueWith(t =>
+                {
+                    Console.WriteLine("\n=== Testing Mediator Pattern ===");
+                    MediatorDemo.RunDemo();
+                });
+            };
         }
 
         private void OnMeteorStrike(List<Point> strikePoints)
@@ -165,6 +175,12 @@ namespace BattleShips.Client
             {
                 DisplayMotivationalMessage();
             }
+        }
+
+        private void btnTestMediator_Click(object sender, EventArgs e)
+        {
+            // Run the mediator demo in a background thread
+            Task.Run(() => MediatorDemo.RunDemo());
         }
 
         // Update your UI drawing to show motivational message

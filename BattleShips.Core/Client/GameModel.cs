@@ -16,6 +16,8 @@ namespace BattleShips.Core
         public HashSet<Point> YourFiredHits { get; } = new();
         public HashSet<Point> AnimatedCells { get; } = new();
 
+        private readonly IGameMediator _mediator;
+
         public List<NavalMine> YourMines { get; } = new();
 
         private readonly MotivationalMessagesCollection _motivationalMessages;
@@ -38,6 +40,16 @@ namespace BattleShips.Core
         private string _currentStatus = "Ready to start your naval adventure";
         private AppState _state = AppState.Menu;
 
+        public GameModel(IGameMediator mediator = null)
+        {
+            _mediator = mediator;
+
+            if (_mediator != null)
+            {
+                _mediator.RegisterGameModel(this);
+            }
+        }
+
         public GameModel()
         {
             // STATE PATTERN: Initialize state context
@@ -52,6 +64,67 @@ namespace BattleShips.Core
             Console.WriteLine($"[GameModel] Selected {_currentIterator.GetType().Name}");
             Console.WriteLine($"[GameModel] First message: {_currentMotivationalMessage}");
         }
+
+        // Add these methods to demonstrate mediator usage
+        public void OnGameStarted(bool youStart)
+        {
+            Console.WriteLine($"[GameModel] Game started, youStart={youStart}");
+
+            // Notify mediator about game start
+            _mediator?.SendNotification("GameModel", "GameStarted", youStart);
+        }
+
+        public void OnShipHit(int x, int y)
+        {
+            Console.WriteLine($"[GameModel] Ship hit at ({x},{y})");
+
+            // Notify mediator about hit
+            _mediator?.SendNotification("GameModel", "ShipHit", new { X = x, Y = y });
+        }
+
+        public void OnShipMissed(int x, int y)
+        {
+            Console.WriteLine($"[GameModel] Ship missed at ({x},{y})");
+
+            // Notify mediator about miss
+            _mediator?.SendNotification("GameModel", "ShipMissed", new { X = x, Y = y });
+        }
+
+        public void OnShipDestroyed(string shipName)
+        {
+            Console.WriteLine($"[GameModel] Ship destroyed: {shipName}");
+
+            // Notify mediator about ship destruction
+            _mediator?.SendNotification("GameModel", "ShipDestroyed", shipName);
+        }
+
+        public void OnGameOver(string winner)
+        {
+            Console.WriteLine($"[GameModel] Game over, winner: {winner}");
+
+            // Notify mediator about game over
+            _mediator?.SendNotification("GameModel", "GameOver", winner);
+        }
+
+        // Method to simulate receiving events from Form via mediator
+        public void ProcessCellClick(int x, int y)
+        {
+            Console.WriteLine($"[GameModel] Processing cell click at ({x},{y})");
+
+            // Simulate game logic
+            var random = new Random();
+            bool isHit = random.Next(2) == 0;
+
+            if (isHit)
+            {
+                OnShipHit(x, y);
+            }
+            else
+            {
+                OnShipMissed(x, y);
+            }
+        }
+    
 
         /// <summary>
         /// Advances to next motivational message (called every turn)
@@ -444,13 +517,13 @@ namespace BattleShips.Core
         }
 
         // When game starts from server
-        public void OnGameStarted(bool youStart)
+        /*public void OnGameStarted(bool youStart)
         {
             // STATE PATTERN: Transition handled by state context
             State = AppState.Playing;
             _isMyTurn = youStart;
             // Status message set by PlayingState.OnEnter()
-        }
+        }*/
 
         /// <summary>
         /// STATE PATTERN: Checks if an action is allowed in current state
